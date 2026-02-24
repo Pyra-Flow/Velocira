@@ -8,7 +8,7 @@
 | **Version**       | 1.0 (MVP)                                    |
 | **Launch Target** | Q2 2026                                      |
 | **Development Duration** | ~16 Weeks (V1 MVP)                    |
-| **Team Size**     | 4–6 Members (cross-functional)               |
+| **Team Size**     | 3 Members (cross-functional)                 |
 
 ---
 
