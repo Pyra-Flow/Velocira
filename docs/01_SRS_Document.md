@@ -9,9 +9,8 @@
 | **Date**          | February 2026                                |
 | **Project Type**  | Web Application (SaaS) — Commercial Product  |
 | **Tech Stack**    | Java Spring Boot · Next.js · Python ML Stack |
-| **Prepared By**   | _[Team Members Names]_                       |
-| **Product Owner** | _[CEO/Founder Name]_                         |
-| **Company/Org**   | _[Organization Name]_                        |
+| **Prepared By**   | Omar Elrfaay, Omar Abdelhamid, Omar Wageh    |
+| **Company/Org**   | PyraFlow                                     |
 
 ---
 
@@ -1233,21 +1232,21 @@ For an early-stage SaaS with a small team, a full microservices architecture is 
 ## 13. Appendix
 
 ### A. Glossary
-
-_[Add any additional terms specific to your implementation]_
+Nothing until now
 
 ### B. Change Log
 
 | Version | Date          | Author           | Changes            |
 |---------|---------------|------------------|--------------------|
-| 1.0     | February 2026 | _[Team Names]_   | Initial SRS draft  |
+| 1.0     | February 2026 | Omar Elrfaay     | Initial SRS draft  |
 
 ### C. Approval
 
 | Role                   | Name           | Signature | Date |
 |------------------------|----------------|-----------|------|
-| Product Manager/Lead   | _____________  | _________ | ____ |
-| Tech Lead              | _____________  | _________ | ____ |
+| Tech Lead - SDET       | Omar Elrfaay   | _________ | 2026/2/23 |
+| ML Engineer            | Omar AbdElhamid| _________ | 2026/2/23 |
+| ML Engineer            | Omar Wageh     | _________ | 2026/2/23 |
 
 ---
 
