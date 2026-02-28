@@ -1,0 +1,287 @@
+{
+  "meta": {
+    "title": "Velocira — AI-Powered Documentation",
+    "description": "Generate production-ready documentation for your projects in minutes using AI"
+  },
+  "nav": {
+    "home": "Home",
+    "about": "About",
+    "contact": "Contact",
+    "features": "Features",
+    "pricing": "Pricing",
+    "docs": "Docs",
+    "login": "Login",
+    "register": "Register",
+    "dashboard": "Dashboard",
+    "projects": "Projects",
+    "settings": "Settings",
+    "admin": "Admin Panel",
+    "logout": "Logout",
+    "logoutAll": "Logout All Devices",
+    "profile": "Profile",
+    "language": "العربية",
+    "theme": "Theme"
+  },
+  "landing": {
+    "badge": "AI-Powered Documentation Platform",
+    "title": "Generate Production-Ready Docs in Minutes",
+    "subtitle": "Velocira transforms your project ideas into comprehensive, structured documentation — SRS, ERDs, API specs, and more — powered by cutting-edge AI.",
+    "cta": "Get Started Free",
+    "ctaSecondary": "Watch Demo",
+    "features": {
+      "title": "Why Velocira?",
+      "subtitle": "Everything you need to document your projects like a pro",
+      "ai": {
+        "title": "AI-Powered Generation",
+        "description": "State-of-the-art language models turn your project description into comprehensive documentation instantly."
+      },
+      "formats": {
+        "title": "Multiple Formats",
+        "description": "Export as PDF, Markdown, or DOCX. Your documentation, your way."
+      },
+      "collaboration": {
+        "title": "Team Ready",
+        "description": "Share projects, collaborate on docs, and manage everything from a single dashboard."
+      },
+      "security": {
+        "title": "Enterprise Security",
+        "description": "JWT authentication, encrypted data, and role-based access control keep your data safe."
+      },
+      "speed": {
+        "title": "Lightning Fast",
+        "description": "From idea to complete documentation in under 5 minutes. No more weeks of writing."
+      },
+      "templates": {
+        "title": "Smart Templates",
+        "description": "Pre-built templates for SRS, Use Cases, ERDs, API structures, and architecture proposals."
+      }
+    },
+    "stats": {
+      "docs": "Documents Generated",
+      "users": "Active Users",
+      "time": "Avg. Generation Time",
+      "satisfaction": "Satisfaction Rate"
+    },
+    "cta2": {
+      "title": "Ready to Transform Your Documentation?",
+      "subtitle": "Join thousands of teams who are already using Velocira to streamline their documentation workflow.",
+      "button": "Start for Free"
+    }
+  },
+  "auth": {
+    "login": {
+      "title": "Welcome Back",
+      "subtitle": "Sign in to your Velocira account",
+      "email": "Email Address",
+      "password": "Password",
+      "submit": "Sign In",
+      "forgot": "Forgot Password?",
+      "noAccount": "Don't have an account?",
+      "register": "Create Account",
+      "orContinue": "Or continue with",
+      "google": "Continue with Google"
+    },
+    "register": {
+      "title": "Create Account",
+      "subtitle": "Start generating documentation today",
+      "fullName": "Full Name",
+      "email": "Email Address",
+      "password": "Password",
+      "universityName": "University (optional)",
+      "submit": "Create Account",
+      "hasAccount": "Already have an account?",
+      "login": "Sign In",
+      "orContinue": "Or continue with",
+      "google": "Sign up with Google",
+      "passwordHint": "Min 8 chars, uppercase, lowercase, number, special character"
+    },
+    "verify": {
+      "title": "Verify Your Email",
+      "subtitle": "We sent a 6-digit code to your email",
+      "otp": "Verification Code",
+      "submit": "Verify Email",
+      "resend": "Resend Code",
+      "resendIn": "Resend in {seconds}s"
+    },
+    "forgot": {
+      "title": "Forgot Password",
+      "subtitle": "Enter your email and we'll send you a reset code",
+      "email": "Email Address",
+      "submit": "Send Reset Code",
+      "back": "Back to Login"
+    },
+    "reset": {
+      "title": "Reset Password",
+      "subtitle": "Enter the code and your new password",
+      "otp": "Reset Code",
+      "password": "New Password",
+      "submit": "Reset Password"
+    }
+  },
+  "about": {
+    "title": "About Velocira",
+    "subtitle": "The future of project documentation is here",
+    "mission": {
+      "title": "Our Mission",
+      "description": "We believe documentation should be a catalyst, not a bottleneck. Velocira empowers teams to go from idea to comprehensive documentation in minutes, not weeks."
+    },
+    "story": {
+      "title": "Our Story",
+      "description": "Born out of frustration with the tedious documentation process, Velocira was created by a team of engineers who understood that great software starts with great documentation. We built the tool we wished we had."
+    },
+    "team": {
+      "title": "Built by PyraFlow",
+      "description": "We are a team of passionate engineers and AI researchers dedicated to transforming how software is documented.",
+      "members": {
+        "omar1": { "name": "Omar Elrfaay", "role": "Co-Founder & Lead Engineer" },
+        "omar2": { "name": "Omar Abdelhamid", "role": "Co-Founder & AI Lead" },
+        "omar3": { "name": "Omar Wageh", "role": "Co-Founder & Product Lead" }
+      }
+    },
+    "values": {
+      "title": "Our Values",
+      "innovation": { "title": "Innovation First", "description": "We push boundaries with cutting-edge AI to solve real problems." },
+      "quality": { "title": "Quality Obsessed", "description": "Every document we generate meets production-ready standards." },
+      "community": { "title": "Community Driven", "description": "We build for our users and evolve based on their feedback." },
+      "transparency": { "title": "Open & Transparent", "description": "Open development process and clear communication with our community." }
+    }
+  },
+  "contact": {
+    "title": "Get in Touch",
+    "subtitle": "Have a question or want to learn more? We'd love to hear from you.",
+    "form": {
+      "name": "Your Name",
+      "email": "Your Email",
+      "subject": "Subject",
+      "message": "Message",
+      "submit": "Send Message"
+    },
+    "info": {
+      "title": "Contact Information",
+      "email": "hello@velocira.com",
+      "location": "Cairo, Egypt",
+      "social": "Follow Us"
+    }
+  },
+  "home": {
+    "welcome": "Welcome back, {name}!",
+    "subtitle": "What would you like to do today?",
+    "quickActions": {
+      "title": "Quick Actions",
+      "newProject": "New Project",
+      "myProjects": "My Projects",
+      "viewDocs": "View Documents",
+      "settings": "Settings",
+      "admin": "Admin Panel",
+      "help": "Help & Docs"
+    },
+    "recent": {
+      "title": "Recent Projects",
+      "empty": "No projects yet. Create your first one!",
+      "create": "Create Project",
+      "viewAll": "View All Projects"
+    },
+    "checklist": {
+      "title": "Getting Started",
+      "createAccount": "Create your account",
+      "verifyEmail": "Verify your email",
+      "createProject": "Create your first project",
+      "generateDoc": "Generate your first document",
+      "exportDoc": "Export a document"
+    },
+    "activity": {
+      "title": "Recent Activity",
+      "empty": "No recent activity"
+    },
+    "tips": {
+      "title": "Tips & Insights"
+    }
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "subtitle": "Your project overview",
+    "stats": {
+      "totalProjects": "Total Projects",
+      "totalDocs": "Documents",
+      "exports": "Exports",
+      "lastActive": "Last Active",
+      "storage": "Storage Used"
+    },
+    "projects": {
+      "title": "Your Projects",
+      "create": "New Project",
+      "empty": "No projects yet",
+      "emptyDesc": "Create your first project to start generating documentation",
+      "viewAll": "View All Projects"
+    },
+    "activity": {
+      "title": "Recent Activity",
+      "empty": "No recent activity"
+    },
+    "profile": {
+      "title": "Profile",
+      "email": "Email",
+      "name": "Name",
+      "role": "Role",
+      "joined": "Member Since",
+      "lastLogin": "Last Login",
+      "verified": "Verified",
+      "notVerified": "Not Verified",
+      "editProfile": "Edit Profile"
+    },
+    "chart": {
+      "title": "Weekly Generation",
+      "total": "Total This Week"
+    },
+    "docTypes": {
+      "title": "Document Types"
+    },
+    "upcoming": {
+      "title": "Coming Soon"
+    }
+  },
+  "footer": {
+    "tagline": "AI-Powered Documentation Platform",
+    "product": "Product",
+    "company": "Company",
+    "legal": "Legal",
+    "contact": "Contact",
+    "features": "Features",
+    "pricing": "Pricing",
+    "docs": "Documentation",
+    "status": "Status",
+    "about": "About",
+    "careers": "Careers",
+    "privacy": "Privacy Policy",
+    "terms": "Terms of Service",
+    "rights": "© {year} Velocira by PyraFlow. All rights reserved.",
+    "madeWith": "Made with ❤️ in Egypt"
+  },
+  "errors": {
+    "required": "This field is required",
+    "invalidEmail": "Please enter a valid email",
+    "passwordWeak": "Password must have 8+ chars, uppercase, lowercase, number, special character",
+    "generic": "Something went wrong. Please try again.",
+    "network": "Network error. Please check your connection.",
+    "unauthorized": "Session expired. Please login again.",
+    "accessDenied": "Access denied. You don't have permission to view this page."
+  },
+  "common": {
+    "loading": "Loading...",
+    "success": "Success!",
+    "error": "Error",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "back": "Back",
+    "next": "Next",
+    "previous": "Previous",
+    "search": "Search...",
+    "filter": "Filter",
+    "viewAll": "View All",
+    "comingSoon": "Coming Soon",
+    "learnMore": "Learn More",
+    "getStarted": "Get Started"
+  }
+}
