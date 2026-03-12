@@ -3,12 +3,15 @@ package com.velocira.backend.audit.service;
 import com.velocira.backend.audit.model.AuditAction;
 import com.velocira.backend.audit.model.AuditLogEntity;
 import com.velocira.backend.audit.repository.AuditLogRepository;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -71,7 +74,8 @@ public class AuditService {
      * Convenience overload for successful actions without device/IP context.
      */
     public void record(UUID userId, String email, AuditAction action, String details) {
-        record(userId, email, action, details, null, null, true);
+        RequestMetadata metadata = extractRequestMetadata();
+        record(userId, email, action, details, metadata.ipAddress(), metadata.deviceInfo(), true);
     }
 
     /**
@@ -80,7 +84,10 @@ public class AuditService {
     @Transactional(readOnly = true)
     public Page<AuditLogEntity> findFiltered(UUID userId, AuditAction action,
             Instant since, Pageable pageable) {
-        return auditLogRepository.findFiltered(userId, action, since, pageable);
+        if (since == null) {
+            return auditLogRepository.findFiltered(userId, action, pageable);
+        }
+        return auditLogRepository.findFilteredSince(userId, action, since, pageable);
     }
 
     /**
@@ -95,5 +102,33 @@ public class AuditService {
         if (value == null)
             return null;
         return value.length() <= maxLength ? value : value.substring(0, maxLength);
+    }
+
+    private RequestMetadata extractRequestMetadata() {
+        ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        if (attributes == null) {
+            return new RequestMetadata(null, null);
+        }
+
+        HttpServletRequest request = attributes.getRequest();
+        String xForwardedFor = request.getHeader("X-Forwarded-For");
+        String ipAddress = null;
+        if (xForwardedFor != null && !xForwardedFor.isBlank()) {
+            ipAddress = xForwardedFor.split(",")[0].trim();
+        } else {
+            String xRealIp = request.getHeader("X-Real-IP");
+            if (xRealIp != null && !xRealIp.isBlank()) {
+                ipAddress = xRealIp.trim();
+            } else {
+                ipAddress = request.getRemoteAddr();
+            }
+        }
+
+        String userAgent = request.getHeader("User-Agent");
+        String deviceInfo = userAgent == null ? null : truncate(userAgent, 512);
+        return new RequestMetadata(ipAddress, deviceInfo);
+    }
+
+    private record RequestMetadata(String ipAddress, String deviceInfo) {
     }
 }

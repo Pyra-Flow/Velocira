@@ -30,10 +30,19 @@ public interface AuditLogRepository extends JpaRepository<AuditLogEntity, UUID> 
 
         @Query("SELECT a FROM AuditLogEntity a WHERE " +
                         "(:userId IS NULL OR a.userId = :userId) AND " +
-                        "(:action IS NULL OR a.action = :action) AND " +
-                        "(:since IS NULL OR a.createdAt >= :since) " +
+                        "(:action IS NULL OR a.action = :action) " +
                         "ORDER BY a.createdAt DESC")
         Page<AuditLogEntity> findFiltered(
+                        @Param("userId") UUID userId,
+                        @Param("action") AuditAction action,
+                        Pageable pageable);
+
+        @Query("SELECT a FROM AuditLogEntity a WHERE " +
+                        "(:userId IS NULL OR a.userId = :userId) AND " +
+                        "(:action IS NULL OR a.action = :action) AND " +
+                        "a.createdAt >= :since " +
+                        "ORDER BY a.createdAt DESC")
+        Page<AuditLogEntity> findFilteredSince(
                         @Param("userId") UUID userId,
                         @Param("action") AuditAction action,
                         @Param("since") Instant since,
