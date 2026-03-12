@@ -45,6 +45,16 @@ The ML team for Velocira consists of:
 | **ML Engineer**           | 1-2   | Prompt engineering, implementation, testing    |
 | **ML DevOps (Optional)**  | 0.5   | Model deployment, monitoring, optimization     |
 
+**Recommended lean setup for the current 3-student team:**
+
+| Student | ML Responsibility | Shared Responsibility |
+|---------|-------------------|-----------------------|
+| **Student 1** | Model selection, evaluation harness, prompt strategy | Final quality review |
+| **Student 2** | Backend integration, retries, caching, metrics | Cost tracking |
+| **Student 3** | Input wizard, clarification UX, document viewer feedback loop | Prompt testing with real user flows |
+
+For a 3-student team, the right tradeoff is **one production API vendor**, **one backup benchmark vendor**, and **one local model only for offline development/demo work**. Do not build a complicated multi-provider router in the MVP.
+
 ### 1.2 Project Context
 
 Velocira is an AI-powered SaaS platform that generates comprehensive project documentation from simple text descriptions. The ML team is responsible for building the intelligent core that transforms user ideas into production-ready documentation.
@@ -131,17 +141,38 @@ Velocira is an AI-powered SaaS platform that generates comprehensive project doc
 - **Version:** 0.100+
 - **Why:** High performance, automatic API documentation, async support, easy integration
 
-#### LLM Options (Choose One)
+#### LLM Strategy (Recommended)
 
-| Option | Pros | Cons | Recommended For |
-|--------|------|------|-----------------|
-| **Ollama (Local)** | Free, privacy, low latency | Requires local compute, limited model selection | Development, testing |
-| **OpenAI API** | High quality, GPT-4 access | Paid ($$$), usage limits | Production (premium tier) |
-| **Hugging Face Inference** | Many models, free tier available | Variable quality, rate limits | MVP testing |
-| **Anthropic Claude** | Excellent instruction following | Paid ($$), newer | Production alternative |
-| **Mistral AI** | Good quality, affordable | Smaller context window | Production (budget) |
+For Velocira, the best strategy is not "whatever model sounds smartest." The product is **output-heavy**, **structured**, and **regeneration-heavy**, so unit economics matter as much as raw quality.
 
-**MVP Recommendation:** Start with **Ollama + Llama 3** for development, evaluate **Mistral AI** or **OpenAI** for production.
+**Decision date:** March 12, 2026  
+**Primary recommendation:** Use **OpenAI in production** and keep **Gemini** as the benchmark/backup option.  
+**Reason:** one-vendor production keeps implementation, observability, quotas, retries, and structured-output behavior much simpler for a 3-student team.
+
+| Model | Official positioning | Price per 1M input / output tokens | Best Use in Velocira | Recommendation |
+|-------|----------------------|------------------------------------|----------------------|----------------|
+| **GPT-5 mini** | Cost-sensitive, low-latency, high-volume reasoning tasks | **$0.25 / $2.00** | Core document generation, section regeneration, Pro plan | **Best Pro choice** |
+| **GPT-5.1** | Strong reasoning/coding model in the GPT-5 family | **$1.25 / $10.00** | Premium generation, deeper tech suggestions, stronger final refinement | **Best Premium choice** |
+| **Gemini 2.5 Flash** | Low-cost hybrid reasoning with 1M context | **$0.30 / $2.50** | Backup benchmark for Pro economics | Good alternative, not primary |
+| **Gemini 2.5 Pro** | State-of-the-art multipurpose reasoning with 1M context | **$1.25 / $10.00** | Backup benchmark for Premium quality | Good alternative, not primary |
+| **Claude Sonnet 4.6** | High-performance reasoning/writing model | **$3.00 / $15.00** | Benchmark for writing style and instruction following | Strong, but expensive for output-heavy docs |
+| **Ollama (Local)** | Free local inference | Local compute only | Prompt development, demos, smoke tests | Dev only |
+
+#### Commercial Plan Mapping
+
+| Velocira Plan | Suggested Price | Primary Model | Why This Fit Works | Suggested Fair-Usage Guardrail |
+|---------------|-----------------|---------------|--------------------|-------------------------------|
+| **Pro** | **~$20/month** | **GPT-5 mini** | Best balance of quality, speed, and margin for student/MVP users | Credit-based cap, such as 25-40 full project generations or equivalent section regenerations |
+| **Premium** | **~$40/month** | **GPT-5.1** | Clear quality upgrade for architecture, roadmap, tech decisions, and final polish | Lower but higher-value credit cap, such as 15-25 full project generations plus priority processing |
+
+#### Final Recommendation for MVP
+
+1. Use **GPT-5 mini** as the default production model for the Pro plan.
+2. Use **GPT-5.1** as the Premium plan model.
+3. Keep **Gemini 2.5 Flash** and **Gemini 2.5 Pro** only for benchmarking and emergency fallback.
+4. Keep **Ollama** only for local development, prompt iteration, and demo resilience.
+
+This gives Velocira a strong quality/cost curve without turning the MVP into an LLM-ops project.
 
 #### Supporting Libraries
 
@@ -555,9 +586,9 @@ All generated documents must meet these quality criteria:
 - ✅ Appropriate scope (not too generic, not too specific)
 - ✅ Aligned with modern software development practices
 
-### 6.2 Input Validation Requirements
+### 6.2 Input Validation and Expansion Requirements
 
-Before processing, validate all inputs:
+Before processing, validate all inputs and expand weak prompts into a richer project brief. This is one of the biggest ways Velocira can outperform users asking ChatGPT or Claude manually.
 
 | Field | Validation Rule |
 |-------|-----------------|
@@ -566,11 +597,68 @@ Before processing, validate all inputs:
 | `techStack` | Optional object with backend, frontend, database fields |
 | `projectName` | 1-200 characters |
 | `teamSize` | 1-50 (if provided) |
+| `targetUsers` | Optional array, max 10 values |
+| `coreFeatures` | Optional array, 1-12 concise items |
+| `timeline` | Optional enum: HACKATHON, COURSE_PROJECT, MVP_1_TO_2_MONTHS, PRODUCTION |
+| `experienceLevel` | Optional enum: STUDENT, JUNIOR, MIXED, PROFESSIONAL |
+| `constraints` | Optional array of budget, compliance, deployment, or deadline constraints |
 
 **Error Handling:**
 - Return 400 Bad Request with clear error message
 - Include field name and constraint violated
 - Suggest valid values
+
+#### Recommended User Input Expansion Flow
+
+Convert the raw idea into a normalized internal object before generating documents:
+
+```json
+{
+  "rawIdea": "A platform for students to share notes and discuss courses",
+  "normalizedBrief": {
+    "problem": "Students need one place to organize and discuss course materials",
+    "targetUsers": ["Students", "Course admins"],
+    "primaryPlatform": "WEB_APP",
+    "coreFeatures": [
+      "note upload",
+      "search",
+      "comments",
+      "course-based organization",
+      "moderation"
+    ],
+    "qualityLevel": "student_mvp",
+    "assumptions": [
+      "authentication is required",
+      "documents are stored in cloud object storage"
+    ],
+    "missingCriticalFields": []
+  }
+}
+```
+
+#### Input Expansion Pipeline
+
+1. **Normalize the idea** into problem, users, platform, features, and constraints.
+2. **Infer missing high-value metadata** such as auth needs, roles, data entities, and deployment style.
+3. **Ask up to 3 clarifying questions only when ambiguity is high.**
+4. **Store assumptions explicitly** and surface them in the generated documents.
+5. **Generate one shared project brief** used by all document generators to keep outputs aligned.
+
+#### Wizard Fields to Add in Frontend
+
+To make output noticeably better than manual prompting, the project creation flow should collect more than just one textarea:
+
+1. Problem statement
+2. Target users
+3. Core features checklist + custom features
+4. Project type
+5. Preferred tech stack or "Let AI suggest"
+6. Team size and skill level
+7. Timeline/deadline
+8. Data sensitivity: low, medium, high
+9. Deployment goal: demo only, course project, startup MVP
+
+If the user skips fields, the ML service should still infer reasonable defaults and mark them as assumptions.
 
 ### 6.3 Output Format Specification
 
@@ -596,7 +684,7 @@ Before processing, validate all inputs:
   ],
   "warnings": [],
   "metadata": {
-    "modelUsed": "llama3",
+    "modelUsed": "gpt-5-mini",
     "tokensConsumed": 3500,
     "promptVersion": "v1.2"
   }
@@ -656,7 +744,7 @@ Three backticks for code blocks
 - Make final LLM selection
 
 **Tasks:**
-1. Set up Ollama with Llama 3, Mistral, and Gemma models
+1. Set up one local Ollama model for offline development plus the chosen production API models
 2. Create test prompts for SRS generation
 3. Compare outputs across models
 4. Benchmark generation time
@@ -940,9 +1028,9 @@ Output the entity list in this exact format:
 
 ---
 
-#### Principle 4: Chain of Thought
+#### Principle 4: Task Decomposition
 
-Break complex tasks into steps:
+Break complex tasks into explicit steps without relying on one giant prompt:
 
 ```
 First, identify the main actors in the system.
@@ -961,6 +1049,25 @@ Address potential issues explicitly:
 If the project idea is vague, make reasonable assumptions and state them.
 If tech stack is not specified, recommend modern, popular choices.
 If the project type is unclear, default to Web Application.
+```
+
+---
+
+#### Principle 6: Use Shared Project Memory
+
+Every generator should receive the same normalized project brief, assumptions, and prior generated artifacts:
+
+```
+Shared Context:
+- Normalized brief
+- Confirmed assumptions
+- Entity candidates
+- Actor list
+- Chosen tech stack
+- Prior document summaries
+
+Instruction:
+Do not contradict earlier validated artifacts unless the current task explicitly revises them.
 ```
 
 ---
@@ -984,6 +1091,43 @@ SRS_PROMPT_TEMPLATE = """
 {examples}
 """
 ```
+
+### 8.3 Multi-Step Generation Pipeline
+
+Velocira should not behave like a single chat message. It should behave like a structured documentation system.
+
+**Recommended pipeline:**
+
+1. **Input expansion**  
+   Raw user text -> normalized brief + assumptions + ambiguity score
+2. **Project planning pass**  
+   Generate actors, domain entities, feature inventory, and likely modules
+3. **Document generation pass**  
+   Generate SRS, Use Cases, ERD, and API using the same shared brief
+4. **Cross-document consistency pass**  
+   Verify that actors, entities, endpoints, and requirements do not conflict
+5. **Quality scoring pass**  
+   Score specificity, completeness, feasibility, and consistency
+6. **Rewrite pass if score is below threshold**  
+   Regenerate only weak sections, not the whole project
+
+**Rule:** Never generate all documents directly from raw user text alone.
+
+### 8.4 Product Differentiators vs Manual Prompting
+
+To be clearly better than asking ChatGPT or Claude manually, Velocira should provide these advantages:
+
+1. **Persistent project memory** across all documents
+2. **Cross-document consistency checks** so the ERD, API, and SRS match
+3. **Section-level regeneration** instead of regenerating everything
+4. **Explicit assumptions ledger** so users know what the AI inferred
+5. **Structured exports** ready for PDF, DOCX, Markdown, and presentations
+6. **Tech-stack suggestions tied to the actual project type and constraints**
+7. **Quality scoring and automatic rewrite** when output is too generic
+8. **Project-specific input wizard** instead of one generic chat box
+9. **Versioned prompts and project history** for repeatability
+
+This product moat matters more than chasing the single "best" model.
 
 #### Example: SRS Prompt Template
 
@@ -1123,7 +1267,7 @@ PROMPT_VERSION = "v1.2"
 
 metadata = {
     "promptVersion": PROMPT_VERSION,
-    "modelUsed": "llama3",
+    "modelUsed": "gpt-5-mini",
     "generatedAt": datetime.now()
 }
 ```
@@ -1374,7 +1518,7 @@ Content-Type: application/json
   ],
   "warnings": [],
   "metadata": {
-    "modelUsed": "llama3",
+    "modelUsed": "gpt-5-mini",
     "tokensConsumed": 4200,
     "promptVersion": "v1.2"
   }
@@ -1634,17 +1778,18 @@ def get_prompt_template(project_type: str, doc_type: str):
 
 #### Technique 4: Model Selection
 
-**Problem:** Larger models are slower but higher quality  
-**Solution:** Use smaller models for simpler document types
+**Problem:** Stronger models improve quality, but careless routing destroys margins  
+**Solution:** Route by subscription tier and workflow stage, not by random provider switching
 
-| Document Type | Model | Reasoning |
-|---------------|-------|-----------|
-| SRS | Llama 3 (8B) | Complex, needs quality |
-| Use Cases | Mistral (7B) | Structured, simpler |
-| ERD | Mistral (7B) | Pattern-based |
-| API | Mistral (7B) | Formulaic |
+| Workflow Stage | Pro Plan Model | Premium Plan Model | Reasoning |
+|---------------|----------------|--------------------|-----------|
+| Input expansion | GPT-5 mini | GPT-5.1 | Cheap first-pass structuring in Pro, deeper reasoning in Premium |
+| SRS / Use Cases / ERD / API generation | GPT-5 mini | GPT-5.1 | Consistent structured generation with one-vendor behavior |
+| Architecture / roadmap / tech recommendation | GPT-5 mini with strict templates | GPT-5.1 | Premium quality matters most here |
+| Rewrite weak sections | GPT-5 mini | GPT-5.1 | Keep retries cost-controlled |
+| Final consistency pass | GPT-5 mini | GPT-5.1 | Premium gets stronger final polish |
 
-**Impact:** 20-30% faster generation for simpler docs
+**Impact:** Better quality predictability and much healthier unit economics than mixing expensive frontier models everywhere
 
 ---
 
@@ -1875,11 +2020,14 @@ Create `.env` file for configuration:
 
 ```bash
 # LLM Configuration
-LLM_PROVIDER=ollama               # ollama, openai, huggingface
+LLM_PROVIDER=openai               # openai, ollama, anthropic, gemini
 OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=llama3
-OPENAI_API_KEY=sk-...             # If using OpenAI
-HF_API_TOKEN=hf_...               # If using Hugging Face
+OLLAMA_MODEL=local-dev-model
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL_PRO=gpt-5-mini
+OPENAI_MODEL_PREMIUM=gpt-5.1
+ANTHROPIC_API_KEY=...             # Optional benchmark only
+GEMINI_API_KEY=...                # Optional benchmark only
 
 # Service Configuration
 SERVICE_PORT=8000
@@ -2136,7 +2284,7 @@ docker logs -f ml-service
 **Solutions:**
 1. **Optimize prompts:** Reduce token count
 2. **Parallel generation:** Use async for multiple docs
-3. **Smaller models:** Use Mistral (7B) instead of Llama 3 (8B)
+3. **Smaller premium-safe model:** Use GPT-5 mini instead of GPT-5.1 for Pro-tier generations
 4. **Caching:** Cache common prompts/sections
 5. **Hardware upgrade:** More CPU/RAM for ML service
 6. **Streaming:** Send sections as they're generated (V1.1)
@@ -2278,6 +2426,16 @@ class MetricsTracker:
 - [LangChain Documentation](https://python.langchain.com/docs/get_started/introduction)
 - [Anthropic Prompt Engineering](https://docs.anthropic.com/claude/docs/prompt-engineering)
 
+#### Current Model and Pricing References (Checked March 12, 2026)
+- [OpenAI Models Overview](https://developers.openai.com/api/docs/models)
+- [OpenAI GPT-5 mini model page](https://developers.openai.com/api/docs/models/gpt-5-mini)
+- [OpenAI GPT-5.1 model page](https://developers.openai.com/api/docs/models/gpt-5.1)
+- [OpenAI API pricing](https://openai.com/api/pricing/)
+- [Anthropic models overview](https://platform.claude.com/docs/en/about-claude/models/overview)
+- [Anthropic pricing](https://www.anthropic.com/pricing#api)
+- [Gemini model capabilities](https://ai.google.dev/gemini-api/docs/models)
+- [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing)
+
 #### FastAPI
 - [FastAPI Official Documentation](https://fastapi.tiangolo.com/)
 - [FastAPI Best Practices](https://github.com/zhanymkanov/fastapi-best-practices)
@@ -2335,20 +2493,33 @@ This guide provides everything the ML team needs to successfully implement the A
 ✅ **Integration:** Seamless connection with backend  
 ✅ **Operations:** Deployment, monitoring, maintenance  
 
+### What Makes Velocira Better Than Manual Chat Prompting
+
+Velocira wins when it stops acting like a single prompt and starts acting like a documentation workflow engine:
+
+1. Shared project memory across all outputs
+2. Clarification-first input expansion
+3. Cross-document consistency validation
+4. Section-level rewrites instead of full retries
+5. Better tech recommendations because they are based on structured project metadata
+6. Export-ready deliverables instead of raw chat text
+
+If those pieces are built well, users get a better result than manually asking ChatGPT or Claude, even when the underlying base model is similar.
+
 **Key Success Factors:**
 1. Start with thorough LLM evaluation
-2. Invest time in prompt engineering
+2. Invest time in input expansion and prompt engineering
 3. Test quality continuously
 4. Optimize performance iteratively
 5. Monitor production closely
 
-**Remember:** The ML service is the "brain" of Velocira. Quality and reliability are more important than speed in the MVP phase. Focus on getting it right, then optimize for performance.
+**Remember:** The ML service is the "brain" of Velocira. The moat is not only the model. The moat is the combination of structured intake, shared project memory, consistency checks, and polished exports.
 
-Good luck, ML team! 🚀
+Good luck, ML team.
 
 ---
 
-**Document Version:** 1.0  
-**Last Updated:** February 28, 2026  
+**Document Version:** 1.1  
+**Last Updated:** March 12, 2026  
 **Maintainer:** ML Team Lead  
 **Status:** Active
