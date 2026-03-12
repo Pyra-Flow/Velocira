@@ -5,6 +5,8 @@ import com.velocira.backend.auth.exceptions.*;
 import com.velocira.backend.auth.model.*;
 import com.velocira.backend.auth.repository.UserRepository;
 import com.velocira.backend.auth.security.JwtProvider;
+import com.velocira.backend.audit.model.AuditAction;
+import com.velocira.backend.audit.service.AuditService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -58,6 +60,7 @@ public class AuthService {
     private final RefreshTokenService refreshTokenService;
     private final OtpService otpService;
     private final GoogleOAuthService googleOAuthService;
+    private final AuditService auditService;
 
     /**
      * Registers a new user with email and password.
@@ -95,6 +98,7 @@ public class AuthService {
 
         user = userRepository.save(user);
         log.info("User registered successfully: [{}]", user.getEmail());
+        auditService.record(user.getId(), user.getEmail(), AuditAction.USER_REGISTERED, "User registered");
 
         // Send verification OTP
         otpService.generateAndSendOtp(user, OtpType.EMAIL_VERIFICATION);
@@ -143,6 +147,8 @@ public class AuthService {
         // Update last login
         user.setLastLoginAt(Instant.now());
         userRepository.save(user);
+        auditService.record(user.getId(), user.getEmail(), AuditAction.USER_LOGIN, "User logged in", ipAddress, deviceInfo,
+                true);
 
         return buildAuthResponse(user, deviceInfo, ipAddress);
     }
@@ -197,6 +203,8 @@ public class AuthService {
         // Update last login
         user.setLastLoginAt(Instant.now());
         userRepository.save(user);
+        auditService.record(user.getId(), user.getEmail(), AuditAction.GOOGLE_LOGIN, "User logged in with Google", ipAddress,
+                deviceInfo, true);
 
         log.info("Google OAuth2 login successful for [{}]", user.getEmail());
         return buildAuthResponse(user, deviceInfo, ipAddress);
@@ -223,6 +231,7 @@ public class AuthService {
 
         otpService.validateOtp(user, request.getOtp(), OtpType.EMAIL_VERIFICATION);
         userRepository.markEmailVerified(user.getId());
+        auditService.record(user.getId(), user.getEmail(), AuditAction.EMAIL_VERIFIED, "Email verified");
 
         log.info("Email verified successfully for user [{}]", user.getEmail());
     }
@@ -269,6 +278,8 @@ public class AuthService {
                 log.info("Forgot password requested for OAuth user [{}]. Skipping.", user.getEmail());
                 return;
             }
+            auditService.record(user.getId(), user.getEmail(), AuditAction.PASSWORD_RESET_REQUESTED,
+                    "Password reset requested");
             otpService.generateAndSendOtp(user, OtpType.PASSWORD_RESET);
         });
 
@@ -303,6 +314,8 @@ public class AuthService {
 
         // Revoke all sessions for security
         refreshTokenService.revokeAllTokens(user);
+        auditService.record(user.getId(), user.getEmail(), AuditAction.PASSWORD_RESET_COMPLETED,
+                "Password reset completed");
 
         log.info("Password reset successfully for user [{}]", user.getEmail());
     }
@@ -333,6 +346,8 @@ public class AuthService {
         UserEntity user = result.user();
         String accessToken = jwtProvider.generateAccessToken(
                 user.getId(), user.getEmail(), user.getRole().name());
+        auditService.record(user.getId(), user.getEmail(), AuditAction.TOKEN_REFRESHED, "Access token refreshed", ipAddress,
+                deviceInfo, true);
 
         return AuthResponse.builder()
                 .accessToken(accessToken)
@@ -362,6 +377,7 @@ public class AuthService {
     public void logoutAll(UserEntity user) {
         log.info("Processing all-device logout for user [{}]", user.getEmail());
         refreshTokenService.revokeAllTokens(user);
+        auditService.record(user.getId(), user.getEmail(), AuditAction.USER_LOGOUT_ALL, "Logged out from all devices");
     }
 
     // ======================== Private Helpers ========================

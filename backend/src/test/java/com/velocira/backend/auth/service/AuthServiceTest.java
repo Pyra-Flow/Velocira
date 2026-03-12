@@ -7,6 +7,7 @@ import com.velocira.backend.auth.model.Role;
 import com.velocira.backend.auth.model.UserEntity;
 import com.velocira.backend.auth.repository.UserRepository;
 import com.velocira.backend.auth.security.JwtProvider;
+import com.velocira.backend.audit.service.AuditService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -45,6 +46,8 @@ class AuthServiceTest {
     private OtpService otpService;
     @Mock
     private GoogleOAuthService googleOAuthService;
+    @Mock
+    private AuditService auditService;
 
     @InjectMocks
     private AuthService authService;
