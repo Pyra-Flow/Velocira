@@ -204,6 +204,6 @@ public class AdminService {
         @Transactional(readOnly = true)
         public Page<AuditLogEntity> getAuditLogs(UUID userId, AuditAction action, Pageable pageable) {
                 log.debug("Admin fetching audit logs, userId=[{}] action=[{}]", userId, action);
-                return auditLogRepository.findFiltered(userId, action, null, pageable);
+                return auditLogRepository.findFiltered(userId, action, pageable);
         }
 }
