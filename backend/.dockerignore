@@ -1,0 +1,8 @@
+.env
+target
+.mvn
+mvnw
+mvnw.cmd
+compose.yaml
+ops
+*.log
