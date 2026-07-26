@@ -1,20 +1,55 @@
 services:
-  postgres:
-    image: 'postgres:16-alpine'
-    container_name: velocira-postgres
+  ai-service:
+    build:
+      context: ../ai-service
+    container_name: velocira-ai-service
     environment:
-      POSTGRES_DB: velocira_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: 1234
+      AI_SERVICE_ENVIRONMENT: ${AI_SERVICE_ENVIRONMENT:-development}
+      AI_SERVICE_PROVIDER: ${AI_SERVICE_PROVIDER:-deterministic}
+      AI_SERVICE_MODEL: ${AI_SERVICE_MODEL:-velocira-deterministic-v1}
+      AI_SERVICE_FALLBACK_MODEL: ${AI_SERVICE_FALLBACK_MODEL:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      AI_SERVICE_GEMINI_BASE_URL: ${AI_SERVICE_GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
+      AI_SERVICE_QDRANT_URL: http://qdrant:6333
+      AI_SERVICE_EMBEDDING_MODEL: ${AI_SERVICE_EMBEDDING_MODEL:-gemini-embedding-2}
+      AI_SERVICE_EMBEDDING_DIMENSIONS: ${AI_SERVICE_EMBEDDING_DIMENSIONS:-768}
+      AI_SERVICE_INTERNAL_TOKEN: ${AI_SERVICE_SHARED_SECRET:-}
+      AI_SERVICE_LOG_LEVEL: ${AI_SERVICE_LOG_LEVEL:-INFO}
     ports:
-      - '5432:5432'
-    volumes:
-      - velocira-pg-data:/var/lib/postgresql/data
+      - '${AI_SERVICE_PORT:-8000}:8000'
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  postgres:
+    image: 'postgres:16-alpine'
+    container_name: velocira-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-velocira_db}
+      POSTGRES_USER: ${POSTGRES_USER:-velocira}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in backend/.env before starting Compose}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - velocira-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Development RAG store. Start with `podman compose up --build`.
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    container_name: velocira-qdrant
+    ports:
+      - '${QDRANT_HTTP_PORT:-6333}:6333'
+      - '${QDRANT_GRPC_PORT:-6334}:6334'
+    volumes:
+      - velocira-qdrant-data:/qdrant/storage
+
 volumes:
   velocira-pg-data:
+  velocira-qdrant-data:
