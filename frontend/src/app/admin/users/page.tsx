@@ -1,9 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Users,
   Search,
   ArrowLeft,
   Eye,
@@ -25,7 +24,6 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useLocale } from "@/providers/LocaleProvider";
 import { useAuthStore } from "@/store/authStore";
 import {
   adminApi,
@@ -38,9 +36,129 @@ import Card from "@/components/ui/Card";
 import {
   FadeIn,
   PageTransition,
+  useSignalMotion,
 } from "@/components/ui/Animations";
 
 type FilterTab = "all" | "active" | "suspended";
+
+type UserActionControlsProps = {
+  user: AdminUserResponse;
+  actionLoading: string | null;
+  onView: (user: AdminUserResponse) => void;
+  onToggleStatus: (id: string, currentlyActive: boolean) => void;
+  onDelete: (user: AdminUserResponse) => void;
+  showLabels?: boolean;
+};
+
+function UserStatus({ active }: { active: boolean }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded border px-2 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.08em] ${
+        active
+          ? "border-success/30 bg-success/10 text-success"
+          : "border-error/30 bg-error/10 text-error"
+      }`}
+      role="status"
+    >
+      <Circle className="h-1.5 w-1.5 fill-current" aria-hidden="true" />
+      {active ? "Active" : "Suspended"}
+    </span>
+  );
+}
+
+function UserRoleControl({
+  user,
+  actionLoading,
+  onChangeRole,
+}: {
+  user: AdminUserResponse;
+  actionLoading: string | null;
+  onChangeRole: (id: string, role: "USER" | "ADMIN") => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() =>
+        onChangeRole(user.id, user.role === "ADMIN" ? "USER" : "ADMIN")
+      }
+      disabled={actionLoading === user.id}
+      className={`inline-flex items-center gap-1 rounded border px-2 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.08em] transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60 ${
+        user.role === "ADMIN"
+          ? "border-info/30 bg-info/10 text-info"
+          : "border-accent/30 bg-accent-light text-accent"
+      }`}
+      title="Click to change role"
+      aria-label={`Change ${user.fullName}'s role from ${user.role}`}
+    >
+      {user.role === "ADMIN" && <Shield className="h-3 w-3" aria-hidden="true" />}
+      {user.role}
+    </button>
+  );
+}
+
+function UserActionControls({
+  user,
+  actionLoading,
+  onView,
+  onToggleStatus,
+  onDelete,
+  showLabels = false,
+}: UserActionControlsProps) {
+  const iconButton =
+    "inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 text-foreground-secondary transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60";
+
+  return (
+    <div
+      className={`flex items-center ${showLabels ? "justify-start gap-2" : "justify-end gap-1"}`}
+    >
+      <button
+        type="button"
+        onClick={() => onView(user)}
+        className={`${iconButton} hover:border-accent/30 hover:bg-accent-light hover:text-accent`}
+        title="View user"
+        aria-label={`View ${user.fullName}`}
+      >
+        <Eye className="h-4 w-4" aria-hidden="true" />
+        {showLabels && <span className="text-xs font-medium">View</span>}
+      </button>
+      <button
+        type="button"
+        onClick={() => onToggleStatus(user.id, user.active)}
+        disabled={actionLoading === user.id}
+        className={`${iconButton} ${
+          user.active
+            ? "hover:border-warning/30 hover:bg-warning/10 hover:text-warning"
+            : "hover:border-success/30 hover:bg-success/10 hover:text-success"
+        }`}
+        title={user.active ? "Suspend user" : "Activate user"}
+        aria-label={`${user.active ? "Suspend" : "Activate"} ${user.fullName}`}
+      >
+        {actionLoading === user.id ? (
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+        ) : user.active ? (
+          <Ban className="h-4 w-4" aria-hidden="true" />
+        ) : (
+          <UserCheck className="h-4 w-4" aria-hidden="true" />
+        )}
+        {showLabels && (
+          <span className="text-xs font-medium">
+            {user.active ? "Suspend" : "Activate"}
+          </span>
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={() => onDelete(user)}
+        className={`${iconButton} hover:border-error/30 hover:bg-error/10 hover:text-error`}
+        title="Delete user"
+        aria-label={`Delete ${user.fullName}`}
+      >
+        <Trash2 className="h-4 w-4" aria-hidden="true" />
+        {showLabels && <span className="text-xs font-medium">Delete</span>}
+      </button>
+    </div>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -48,8 +166,8 @@ type FilterTab = "all" | "active" | "suspended";
 
 export default function AdminUsersPage() {
   const router = useRouter();
-  const { t } = useLocale();
   const { user, isAuthenticated, isLoading } = useAuthStore();
+  const { shouldReduceMotion, transition: signalTransition } = useSignalMotion();
 
   /* ---- State ---- */
   const [users, setUsers] = useState<AdminUserResponse[]>([]);
@@ -68,6 +186,9 @@ export default function AdminUsersPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [viewUser, setViewUser] = useState<AdminUserResponse | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AdminUserResponse | null>(null);
+  const viewDialogRef = useRef<HTMLDivElement>(null);
+  const deleteDialogRef = useRef<HTMLDivElement>(null);
+  const lastModalFocusRef = useRef<HTMLElement | null>(null);
 
   /* ---- Auth guard ---- */
   useEffect(() => {
@@ -119,6 +240,51 @@ export default function AdminUsersPage() {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
+
+  const activeDialog = viewUser ? "details" : deleteTarget ? "delete" : null;
+
+  /* ---- Modal keyboard dismissal and focus containment ---- */
+  useEffect(() => {
+    if (!activeDialog) return;
+    lastModalFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const frame = window.requestAnimationFrame(() => {
+      const dialog = activeDialog === "details" ? viewDialogRef.current : deleteDialogRef.current;
+      dialog?.querySelector<HTMLElement>("[data-dialog-autofocus], button:not([disabled]), [href], input:not([disabled])")?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      lastModalFocusRef.current?.focus();
+    };
+  }, [activeDialog]);
+
+  const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (deleteTarget) setDeleteTarget(null);
+      else setViewUser(null);
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = event.currentTarget;
+    const focusable = Array.from(dialog.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"));
+    if (focusable.length === 0) {
+      event.preventDefault();
+      dialog.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) return;
+    if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
 
   /* ---- Filtered (client-side for active/suspended toggle) ---- */
   const filtered =
@@ -190,7 +356,11 @@ export default function AdminUsersPage() {
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   };
@@ -218,7 +388,7 @@ export default function AdminUsersPage() {
   if (isLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-background-secondary">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <Loader2 className="h-8 w-8 animate-spin text-accent" />
       </div>
     );
   }
@@ -228,7 +398,7 @@ export default function AdminUsersPage() {
   if (user?.role !== "ADMIN") {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background-secondary">
-        <ShieldCheck className="h-16 w-16 text-red-400" />
+        <ShieldCheck className="h-16 w-16 text-error" />
         <h1 className="text-2xl font-display font-bold text-foreground">
           Access Denied
         </h1>
@@ -253,20 +423,22 @@ export default function AdminUsersPage() {
 
   return (
     <PageTransition>
-      <main className="min-h-screen bg-background-secondary">
-        <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
+      <section className="workspace-page">
+        <div className="workspace-page__inner max-w-7xl">
           {/* ---------- Header ---------- */}
           <FadeIn>
             <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
                 <Link
                   href="/admin"
-                  className="flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-card text-foreground-secondary hover:text-primary hover:border-primary/30 transition-colors"
+                  className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-card text-foreground-secondary transition-colors hover:border-accent/30 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  aria-label="Back to admin dashboard"
                 >
                   <ArrowLeft className="h-5 w-5" />
                 </Link>
                 <div>
-                  <h1 className="text-3xl font-display font-bold gradient-text">
+                  <p className="workspace-page__eyebrow">System operations</p>
+                  <h1 className="workspace-page__title text-3xl">
                     User Management
                   </h1>
                   <p className="text-sm text-foreground-secondary">
@@ -289,22 +461,24 @@ export default function AdminUsersPage() {
           {/* ---------- Filters + Bulk Actions ---------- */}
           <FadeIn delay={0.05}>
             <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2" aria-label="User filters">
                 {filterTabs.map((tab) => (
                   <button
+                    type="button"
                     key={tab.key}
                     onClick={() => setFilter(tab.key)}
-                    className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-medium transition-colors cursor-pointer ${
+                    aria-pressed={filter === tab.key}
+                    className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.08em] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
                       filter === tab.key
-                        ? "bg-primary/10 text-primary border border-primary/20"
-                        : "border border-border text-foreground-secondary hover:text-foreground hover:border-border-hover"
+                        ? "border-accent/30 bg-accent-light text-accent"
+                        : "border-border text-foreground-secondary hover:border-border-hover hover:text-foreground"
                     }`}
                   >
                     {tab.label}
                     <span
-                      className={`rounded-full px-1.5 py-0.5 text-xs ${
+                      className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
                         filter === tab.key
-                          ? "bg-primary/20 text-primary"
+                          ? "bg-accent/20 text-accent"
                           : "bg-background-secondary text-foreground-secondary"
                       }`}
                     >
@@ -317,14 +491,35 @@ export default function AdminUsersPage() {
               <AnimatePresence>
                 {selected.size > 0 && (
                   <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    className="flex items-center gap-3"
+                    initial={shouldReduceMotion ? false : { opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={shouldReduceMotion ? undefined : { opacity: 0, y: -4 }}
+                    transition={signalTransition}
+                    className="flex w-full flex-col gap-3 rounded-md border border-accent/25 bg-accent-light px-3 py-2.5 sm:w-auto sm:flex-row sm:items-center"
+                    aria-live="polite"
+                    aria-atomic="true"
                   >
-                    <span className="text-sm text-foreground-secondary">
-                      {selected.size} selected
-                    </span>
+                    <div className="min-w-0">
+                      <p className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-accent">
+                        Selection queue
+                      </p>
+                      <p className="text-sm text-foreground">
+                        <span className="font-mono font-semibold text-accent">
+                          {selected.size.toLocaleString()}
+                        </span>{" "}
+                        {selected.size === 1 ? "account selected" : "accounts selected"}
+                      </p>
+                    </div>
+                    <p className="text-xs text-foreground-secondary sm:max-w-44">
+                      Suspension applies to active accounts only.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setSelected(new Set())}
+                      className="self-start rounded px-1 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.08em] text-foreground-secondary transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:self-auto"
+                    >
+                      Clear
+                    </button>
                     <Button
                       variant="danger"
                       size="sm"
@@ -343,15 +538,19 @@ export default function AdminUsersPage() {
           <FadeIn delay={0.1}>
             <Card className="overflow-hidden p-0">
               {loadingUsers ? (
-                <div className="flex items-center justify-center py-20">
-                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                <div className="flex flex-col items-center justify-center gap-3 py-20" role="status">
+                  <Loader2 className="h-6 w-6 animate-spin text-accent" aria-hidden="true" />
+                  <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-foreground-secondary">
+                    Loading user records
+                  </span>
                 </div>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-border text-left text-foreground-secondary bg-background-secondary">
-                        <th className="p-4 font-medium w-10">
+                <>
+                  <div className="hidden overflow-x-auto md:block">
+                    <table className="w-full text-sm" aria-label="User records">
+                      <thead>
+                        <tr className="border-b border-border bg-background-secondary text-left font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-foreground-secondary">
+                          <th className="w-10 p-3" scope="col">
                           <input
                             type="checkbox"
                             checked={
@@ -359,180 +558,229 @@ export default function AdminUsersPage() {
                               selected.size === filtered.length
                             }
                             onChange={toggleSelectAll}
-                            className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
+                            className="h-4 w-4 rounded-sm border-border accent-accent cursor-pointer"
+                            aria-label="Select all filtered users"
                           />
-                        </th>
-                        <th className="p-4 font-medium">User</th>
-                        <th className="p-4 font-medium">Email</th>
-                        <th className="p-4 font-medium">Role</th>
-                        <th className="p-4 font-medium">Status</th>
-                        <th className="p-4 font-medium text-center">Projects</th>
-                        <th className="p-4 font-medium">Joined</th>
-                        <th className="p-4 font-medium text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {filtered.map((u) => (
-                        <motion.tr
-                          key={u.id}
-                          layout
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          className="group hover:bg-card transition-colors"
-                        >
-                          {/* Checkbox */}
-                          <td className="p-4">
+                          </th>
+                          <th className="p-3" scope="col">User</th>
+                          <th className="p-3" scope="col">Email</th>
+                          <th className="p-3" scope="col">Role</th>
+                          <th className="p-3" scope="col">Status</th>
+                          <th className="p-3 text-center" scope="col">Projects</th>
+                          <th className="p-3" scope="col">Joined</th>
+                          <th className="p-3 text-right" scope="col">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {filtered.map((u) => (
+                          <motion.tr
+                            key={u.id}
+                            layout
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className={`group transition-colors hover:bg-background-secondary ${
+                              selected.has(u.id) ? "bg-accent/[0.045]" : ""
+                            }`}
+                          >
+                            <td className="p-3 align-middle">
                             <input
                               type="checkbox"
                               checked={selected.has(u.id)}
                               onChange={() => toggleSelect(u.id)}
-                              className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
+                              className="h-4 w-4 rounded-sm border-border accent-accent cursor-pointer"
+                              aria-label={`Select ${u.fullName}`}
                             />
-                          </td>
+                            </td>
 
-                          {/* Avatar + Name */}
-                          <td className="p-4">
+                            <td className="p-3 align-middle">
                             <div className="flex items-center gap-3">
                               <div
-                                className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold ${
+                                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded text-xs font-semibold ${
                                   u.role === "ADMIN"
-                                    ? "bg-violet-500/15 text-violet-400"
-                                    : "bg-primary/10 text-primary"
+                                    ? "bg-info/10 text-info"
+                                    : "bg-accent-light text-accent"
                                 }`}
                               >
                                 {getInitials(u.fullName)}
                               </div>
-                              <span className="font-medium text-foreground whitespace-nowrap">
-                                {u.fullName}
+                              <div className="min-w-0">
+                                <span className="block truncate font-medium text-foreground">
+                                  {u.fullName}
+                                </span>
+                                <span className="block max-w-36 truncate font-mono text-[10px] text-foreground-secondary" title={u.id}>
+                                  {u.id}
+                                </span>
+                              </div>
+                            </div>
+                            </td>
+
+                            <td className="p-3 align-middle text-foreground-secondary">
+                              <span className="block max-w-48 truncate" title={u.email}>
+                                {u.email}
                               </span>
-                            </div>
-                          </td>
+                            </td>
 
-                          {/* Email */}
-                          <td className="p-4 text-foreground-secondary whitespace-nowrap">
-                            {u.email}
-                          </td>
+                            <td className="p-3 align-middle">
+                              <UserRoleControl
+                                user={u}
+                                actionLoading={actionLoading}
+                                onChangeRole={changeRole}
+                              />
+                            </td>
 
-                          {/* Role */}
-                          <td className="p-4">
-                            <button
-                              onClick={() =>
-                                changeRole(
-                                  u.id,
-                                  u.role === "ADMIN" ? "USER" : "ADMIN"
-                                )
-                              }
-                              disabled={actionLoading === u.id}
-                              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium cursor-pointer transition-opacity hover:opacity-80 ${
-                                u.role === "ADMIN"
-                                  ? "bg-violet-500/10 text-violet-400"
-                                  : "bg-blue-500/10 text-blue-400"
-                              }`}
-                              title="Click to toggle role"
+                            <td className="p-3 align-middle">
+                              <UserStatus active={u.active} />
+                            </td>
+
+                            <td className="p-3 text-center align-middle font-mono text-xs text-foreground">
+                              {u.projectCount}
+                            </td>
+
+                            <td className="p-3 align-middle">
+                              <time
+                                dateTime={u.createdAt}
+                                title={u.createdAt}
+                                className="whitespace-nowrap font-mono text-[11px] text-foreground-secondary"
+                              >
+                                {formatRelativeTime(u.createdAt)}
+                              </time>
+                            </td>
+
+                            <td className="p-3 align-middle">
+                              <UserActionControls
+                                user={u}
+                                actionLoading={actionLoading}
+                                onView={setViewUser}
+                                onToggleStatus={toggleSuspend}
+                                onDelete={setDeleteTarget}
+                              />
+                            </td>
+                          </motion.tr>
+                        ))}
+
+                        {filtered.length === 0 && (
+                          <tr>
+                            <td
+                              colSpan={8}
+                              className="py-16 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-foreground-secondary"
                             >
-                              {u.role === "ADMIN" && (
-                                <Shield className="h-3 w-3" />
-                              )}
-                              {u.role}
-                            </button>
-                          </td>
+                              No users match this view.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
 
-                          {/* Status */}
-                          <td className="p-4">
-                            <span
-                              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                                u.active
-                                  ? "bg-emerald-500/10 text-emerald-400"
-                                  : "bg-red-500/10 text-red-400"
-                              }`}
-                            >
-                              <Circle className="h-1.5 w-1.5 fill-current" />
-                              {u.active ? "Active" : "Suspended"}
-                            </span>
-                          </td>
-
-                          {/* Projects */}
-                          <td className="p-4 text-center text-foreground">
-                            {u.projectCount}
-                          </td>
-
-                          {/* Joined */}
-                          <td className="p-4 text-foreground-secondary whitespace-nowrap">
-                            {formatRelativeTime(u.createdAt)}
-                          </td>
-
-                          {/* Actions */}
-                          <td className="p-4">
-                            <div className="flex items-center justify-end gap-1">
-                              <button
-                                onClick={() => setViewUser(u)}
-                                className="rounded-lg p-2 text-foreground-secondary hover:text-primary hover:bg-primary/10 transition-colors cursor-pointer"
-                                title="View"
-                              >
-                                <Eye className="h-4 w-4" />
-                              </button>
-                              <button
-                                onClick={() =>
-                                  toggleSuspend(u.id, u.active)
-                                }
-                                disabled={actionLoading === u.id}
-                                className={`rounded-lg p-2 transition-colors cursor-pointer ${
-                                  u.active
-                                    ? "text-foreground-secondary hover:text-amber-400 hover:bg-amber-500/10"
-                                    : "text-foreground-secondary hover:text-emerald-400 hover:bg-emerald-500/10"
-                                }`}
-                                title={u.active ? "Suspend" : "Activate"}
-                              >
-                                {actionLoading === u.id ? (
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                ) : u.active ? (
-                                  <Ban className="h-4 w-4" />
-                                ) : (
-                                  <UserCheck className="h-4 w-4" />
-                                )}
-                              </button>
-                              <button
-                                onClick={() => setDeleteTarget(u)}
-                                className="rounded-lg p-2 text-foreground-secondary hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
-                                title="Delete"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            </div>
-                          </td>
-                        </motion.tr>
-                      ))}
-
-                      {filtered.length === 0 && (
-                        <tr>
-                          <td
-                            colSpan={8}
-                            className="py-16 text-center text-foreground-secondary"
+                  <div className="divide-y divide-border md:hidden">
+                    {filtered.map((u) => (
+                      <motion.article
+                        key={u.id}
+                        layout
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className={`p-4 transition-colors ${
+                          selected.has(u.id) ? "bg-accent/[0.045]" : ""
+                        }`}
+                        aria-label={`${u.fullName} user record`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={selected.has(u.id)}
+                            onChange={() => toggleSelect(u.id)}
+                            className="mt-2 h-4 w-4 shrink-0 rounded-sm border-border accent-accent cursor-pointer"
+                            aria-label={`Select ${u.fullName}`}
+                          />
+                          <div
+                            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded text-sm font-semibold ${
+                              u.role === "ADMIN"
+                                ? "bg-info/10 text-info"
+                                : "bg-accent-light text-accent"
+                            }`}
                           >
-                            No users found.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                            {getInitials(u.fullName)}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="truncate font-medium text-foreground">{u.fullName}</p>
+                              <UserStatus active={u.active} />
+                            </div>
+                            <p className="mt-1 truncate text-sm text-foreground-secondary">{u.email}</p>
+                            <p className="mt-1 truncate font-mono text-[10px] text-foreground-secondary" title={u.id}>
+                              {u.id}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-3 gap-x-3 gap-y-3 border-y border-border py-3">
+                          <div>
+                            <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-foreground-secondary">Role</p>
+                            <div className="mt-1">
+                              <UserRoleControl
+                                user={u}
+                                actionLoading={actionLoading}
+                                onChangeRole={changeRole}
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-foreground-secondary">Projects</p>
+                            <p className="mt-1 font-mono text-sm text-foreground">{u.projectCount}</p>
+                          </div>
+                          <div>
+                            <p className="font-mono text-[10px] uppercase tracking-[0.08em] text-foreground-secondary">Joined</p>
+                            <time
+                              dateTime={u.createdAt}
+                              title={u.createdAt}
+                              className="mt-1 block whitespace-nowrap font-mono text-[11px] text-foreground"
+                            >
+                              {formatRelativeTime(u.createdAt)}
+                            </time>
+                          </div>
+                        </div>
+
+                        <div className="mt-3">
+                          <p className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-foreground-secondary">
+                            Row actions
+                          </p>
+                          <UserActionControls
+                            user={u}
+                            actionLoading={actionLoading}
+                            onView={setViewUser}
+                            onToggleStatus={toggleSuspend}
+                            onDelete={setDeleteTarget}
+                            showLabels
+                          />
+                        </div>
+                      </motion.article>
+                    ))}
+
+                    {filtered.length === 0 && (
+                      <div className="px-4 py-16 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-foreground-secondary">
+                        No users match this view.
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
 
               {/* Pagination */}
-              <div className="flex items-center justify-between border-t border-border px-4 py-3">
+              <div className="flex flex-col gap-3 border-t border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm text-foreground-secondary">
                   Page{" "}
-                  <span className="font-medium text-foreground">
+                  <span className="font-mono font-medium text-foreground">
                     {currentPage + 1}
                   </span>{" "}
                   of{" "}
-                  <span className="font-medium text-foreground">
+                  <span className="font-mono font-medium text-foreground">
                     {totalPages || 1}
                   </span>{" "}
                   ({totalElements.toLocaleString()} users)
                 </p>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 self-end sm:self-auto">
                   <Button
                     variant="outline"
                     size="sm"
@@ -563,34 +811,40 @@ export default function AdminUsersPage() {
         <AnimatePresence>
           {viewUser && (
             <motion.div
-              className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+              className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setViewUser(null)}
             >
               <motion.div
-                className="w-full max-w-lg rounded-2xl border border-border bg-card shadow-2xl overflow-hidden"
+                ref={viewDialogRef}
+                className="w-full max-w-lg overflow-hidden rounded-lg border border-border bg-card"
                 initial={{ opacity: 0, scale: 0.95, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 20 }}
                 transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
                 onClick={(e) => e.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="user-detail-title"
+                tabIndex={-1}
+                onKeyDown={handleDialogKeyDown}
               >
                 {/* Modal Header */}
                 <div className="flex items-start justify-between border-b border-border p-6">
                   <div className="flex items-center gap-4">
                     <div
-                      className={`flex h-14 w-14 items-center justify-center rounded-full text-lg font-bold ${
+                      className={`flex h-14 w-14 items-center justify-center rounded text-lg font-bold ${
                         viewUser.role === "ADMIN"
-                          ? "bg-violet-500/15 text-violet-400"
-                          : "bg-primary/10 text-primary"
+                          ? "bg-info/10 text-info"
+                          : "bg-accent-light text-accent"
                       }`}
                     >
                       {getInitials(viewUser.fullName)}
                     </div>
                     <div>
-                      <h2 className="text-xl font-display font-bold text-foreground">
+                      <h2 id="user-detail-title" className="text-xl font-display font-bold text-foreground">
                         {viewUser.fullName}
                       </h2>
                       <p className="text-sm text-foreground-secondary">
@@ -599,8 +853,10 @@ export default function AdminUsersPage() {
                     </div>
                   </div>
                   <button
+                    data-dialog-autofocus
                     onClick={() => setViewUser(null)}
-                    className="rounded-lg p-2 text-foreground-secondary hover:text-foreground hover:bg-background-secondary transition-colors cursor-pointer"
+                    className="rounded-md p-2 text-foreground-secondary transition-colors cursor-pointer hover:bg-background-secondary hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                    aria-label="Close user details"
                   >
                     <X className="h-5 w-5" />
                   </button>
@@ -623,10 +879,10 @@ export default function AdminUsersPage() {
                         <Circle className="h-3 w-3" /> Status
                       </p>
                       <span
-                        className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                        className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-0.5 text-xs font-medium ${
                           viewUser.active
-                            ? "bg-emerald-500/10 text-emerald-400"
-                            : "bg-red-500/10 text-red-400"
+                            ? "border-success/30 bg-success/10 text-success"
+                            : "border-error/30 bg-error/10 text-error"
                         }`}
                       >
                         <Circle className="h-1.5 w-1.5 fill-current" />
@@ -670,7 +926,7 @@ export default function AdminUsersPage() {
                   </div>
 
                   {viewUser.universityName && (
-                    <div className="rounded-xl border border-border bg-background-secondary p-3">
+                    <div className="rounded-md border border-border bg-background-secondary p-3">
                       <p className="text-xs text-foreground-secondary mb-1">
                         University
                       </p>
@@ -680,7 +936,7 @@ export default function AdminUsersPage() {
                     </div>
                   )}
 
-                  <div className="rounded-xl border border-border bg-background-secondary p-3">
+                  <div className="rounded-md border border-border bg-background-secondary p-3">
                     <p className="text-xs text-foreground-secondary mb-1">
                       Auth Provider
                     </p>
@@ -748,25 +1004,31 @@ export default function AdminUsersPage() {
         <AnimatePresence>
           {deleteTarget && (
             <motion.div
-              className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+              className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setDeleteTarget(null)}
             >
               <motion.div
-                className="w-full max-w-md rounded-2xl border border-border bg-card shadow-2xl"
+                ref={deleteDialogRef}
+                className="w-full max-w-md rounded-lg border border-border bg-card"
                 initial={{ opacity: 0, scale: 0.95, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 20 }}
                 transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
                 onClick={(e) => e.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="delete-user-title"
+                tabIndex={-1}
+                onKeyDown={handleDialogKeyDown}
               >
                 <div className="p-6 text-center">
-                  <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-red-500/10">
-                    <AlertTriangle className="h-7 w-7 text-red-400" />
+                  <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded bg-error/10">
+                    <AlertTriangle className="h-7 w-7 text-error" />
                   </div>
-                  <h2 className="text-xl font-display font-bold text-foreground mb-2">
+                  <h2 id="delete-user-title" className="text-xl font-display font-bold text-foreground mb-2">
                     Delete User
                   </h2>
                   <p className="text-sm text-foreground-secondary mb-1">
@@ -784,6 +1046,7 @@ export default function AdminUsersPage() {
 
                 <div className="flex items-center justify-end gap-2 border-t border-border px-6 py-4">
                   <Button
+                    data-dialog-autofocus
                     variant="ghost"
                     size="sm"
                     onClick={() => setDeleteTarget(null)}
@@ -810,7 +1073,7 @@ export default function AdminUsersPage() {
             </motion.div>
           )}
         </AnimatePresence>
-      </main>
+      </section>
     </PageTransition>
   );
 }
