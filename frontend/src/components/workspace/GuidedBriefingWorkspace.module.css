@@ -1,0 +1,22 @@
+.executiveCard {
+  border: 1px solid #e2dbcf;
+  border-radius: 13px;
+  background: #fffdf8;
+  box-shadow: 0 12px 28px rgba(68, 57, 42, .035);
+  padding: 28px;
+}
+
+.executiveCard .executiveTitle {
+  max-width: 660px;
+  margin: 0;
+  color: #273129;
+  font-family: Georgia, Cambria, "Times New Roman", serif;
+  font-size: clamp(26px, 2.55vw, 34px);
+  font-weight: 400;
+  letter-spacing: -.045em;
+  line-height: 1.1;
+}
+
+.workspaceMain {
+  padding-inline: clamp(24px, 2.8vw, 42px);
+}
