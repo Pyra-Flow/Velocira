@@ -37,6 +37,8 @@ interface ProjectState {
   updateProject: (id: string, data: UpdateProjectRequest) => Promise<ProjectResponse | null>;
   deleteProject: (id: string) => Promise<boolean>;
   duplicateProject: (id: string) => Promise<ProjectResponse | null>;
+  archiveProject: (id: string) => Promise<ProjectResponse | null>;
+  restoreProject: (id: string) => Promise<ProjectResponse | null>;
   setSelectedProject: (project: ProjectResponse | null) => void;
   clearError: () => void;
 }
@@ -147,6 +149,38 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       set((s) => ({
         projects: [res.data!, ...s.projects],
         totalElements: s.totalElements + 1,
+        isSubmitting: false,
+      }));
+      return res.data;
+    }
+    set({ isSubmitting: false, error: res.message });
+    return null;
+  },
+
+  archiveProject: async (id) => {
+    set({ isSubmitting: true, error: null });
+    const res = await projectApi.archive(id);
+    if (res.success && res.data) {
+      set((s) => ({
+        projects: s.projects.filter((project) => project.id !== id),
+        totalElements: Math.max(0, s.totalElements - 1),
+        selectedProject: s.selectedProject?.id === id ? res.data! : s.selectedProject,
+        isSubmitting: false,
+      }));
+      return res.data;
+    }
+    set({ isSubmitting: false, error: res.message });
+    return null;
+  },
+
+  restoreProject: async (id) => {
+    set({ isSubmitting: true, error: null });
+    const res = await projectApi.restore(id);
+    if (res.success && res.data) {
+      set((s) => ({
+        projects: [res.data!, ...s.projects.filter((project) => project.id !== id)],
+        totalElements: s.totalElements + 1,
+        selectedProject: s.selectedProject?.id === id ? res.data! : s.selectedProject,
         isSubmitting: false,
       }));
       return res.data;

@@ -12,10 +12,10 @@
     "@react-oauth/google": "^0.13.4",
     "clsx": "^2.1.1",
     "framer-motion": "^12.34.3",
-    "js-cookie": "^3.0.5",
+    "js-cookie": "^3.0.8",
     "lucide-react": "^0.575.0",
-    "next": "16.1.6",
-    "next-intl": "^4.8.3",
+    "next": "^16.2.11",
+    "next-intl": "^4.13.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "zustand": "^5.0.11"
@@ -27,8 +27,13 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.1.6",
+    "eslint-config-next": "^16.2.11",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "overrides": {
+    "picomatch": "4.0.5",
+    "postcss": "8.5.23",
+    "sharp": "0.35.3"
   }
 }

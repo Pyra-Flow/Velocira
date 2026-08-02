@@ -237,7 +237,7 @@
       "title": "Document Types"
     },
     "upcoming": {
-      "title": "Coming Soon"
+      "title": "Planned features"
     }
   },
   "footer": {
@@ -280,7 +280,7 @@
     "search": "Search...",
     "filter": "Filter",
     "viewAll": "View All",
-    "comingSoon": "Coming Soon",
+    "comingSoon": "Not available in this release",
     "learnMore": "Learn More",
     "getStarted": "Get Started"
   }

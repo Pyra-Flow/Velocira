@@ -31,15 +31,23 @@ export interface UserDto {
 }
 
 let isRefreshing = false;
-let refreshSubscribers: ((token: string) => void)[] = [];
+let refreshSubscribers: ((token: string | null) => void)[] = [];
 
-function onRefreshed(token: string) {
+function notifyRefreshSubscribers(token: string | null) {
   refreshSubscribers.forEach((cb) => cb(token));
   refreshSubscribers = [];
 }
 
-function addRefreshSubscriber(cb: (token: string) => void) {
+function addRefreshSubscriber(cb: (token: string | null) => void) {
   refreshSubscribers.push(cb);
+}
+
+function sessionCookieOptions(expires: number) {
+  return {
+    expires,
+    sameSite: "strict" as const,
+    secure: typeof window !== "undefined" && window.location.protocol === "https:",
+  };
 }
 
 async function refreshAccessToken(): Promise<string | null> {
@@ -54,8 +62,8 @@ async function refreshAccessToken(): Promise<string | null> {
     });
     const data: ApiResponse<AuthResponse> = await res.json();
     if (data.success && data.data) {
-      Cookies.set("accessToken", data.data.accessToken, { expires: 1 });
-      Cookies.set("refreshToken", data.data.refreshToken, { expires: 30 });
+      Cookies.set("accessToken", data.data.accessToken, sessionCookieOptions(1));
+      Cookies.set("refreshToken", data.data.refreshToken, sessionCookieOptions(30));
       return data.data.accessToken;
     }
   } catch {
@@ -74,9 +82,13 @@ export async function apiClient<T = unknown>(
   const accessToken = Cookies.get("accessToken");
 
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   };
+  // Browsers set the multipart boundary. Sending application/json here would
+  // make a real evidence upload unreadable by Spring.
+  if (!(options.body instanceof FormData) && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
 
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
@@ -92,10 +104,11 @@ export async function apiClient<T = unknown>(
         const newToken = await refreshAccessToken();
         isRefreshing = false;
         if (newToken) {
-          onRefreshed(newToken);
+          notifyRefreshSubscribers(newToken);
           headers.Authorization = `Bearer ${newToken}`;
           res = await fetch(url, { ...options, headers, credentials: "include" });
         } else {
+          notifyRefreshSubscribers(null);
           return {
             success: false,
             status: 401,
@@ -106,14 +119,32 @@ export async function apiClient<T = unknown>(
         }
       } else {
         // Wait for the refresh to complete
-        const newToken = await new Promise<string>((resolve) => {
+        const newToken = await new Promise<string | null>((resolve) => {
           addRefreshSubscriber(resolve);
         });
+        if (!newToken) {
+          return {
+            success: false,
+            status: 401,
+            message: "Session expired. Please login again.",
+            data: null,
+            timestamp: new Date().toISOString(),
+          };
+        }
         headers.Authorization = `Bearer ${newToken}`;
         res = await fetch(url, { ...options, headers, credentials: "include" });
       }
     }
 
+    if (res.status === 204) {
+      return {
+        success: res.ok,
+        status: 204,
+        message: "Operation completed successfully",
+        data: null,
+        timestamp: new Date().toISOString(),
+      };
+    }
     const data: ApiResponse<T> = await res.json();
     return data;
   } catch {
@@ -245,7 +276,15 @@ export type ProjectType =
   | "DESKTOP_APP"
   | "API_BACKEND";
 
-export type ProjectStatus = "DRAFT" | "GENERATING" | "COMPLETE" | "FAILED";
+export type ProjectStatus =
+  | "DRAFT"
+  | "DISCOVERY"
+  | "READY_FOR_GENERATION"
+  | "GENERATING"
+  | "NEEDS_REVIEW"
+  | "APPROVED"
+  | "FAILED"
+  | "ARCHIVED";
 
 export interface ProjectResponse {
   id: string;
@@ -263,6 +302,7 @@ export interface ProjectResponse {
   ownerName: string;
   createdAt: string;
   updatedAt: string;
+  archivedAt?: string | null;
 }
 
 export interface CreateProjectRequest {
@@ -283,6 +323,244 @@ export interface UpdateProjectRequest {
   industry?: string;
   targetAudience?: string;
   teamSize?: number;
+}
+
+export interface UpdateProjectStatusRequest {
+  status: ProjectStatus;
+}
+
+/* ================================================================== */
+/*  Types — Discovery Interview                                        */
+/* ================================================================== */
+
+export type InterviewCategory =
+  | "STAKEHOLDERS"
+  | "PROBLEM"
+  | "USERS"
+  | "SCOPE"
+  | "EXCLUSIONS"
+  | "WORKFLOWS"
+  | "BUSINESS_RULES"
+  | "ENTITIES"
+  | "INTEGRATIONS"
+  | "QUALITY_GOALS"
+  | "CONSTRAINTS"
+  | "RISKS"
+  | "METRICS";
+
+export type InterviewAnswerDisposition = "ANSWERED" | "UNKNOWN" | "SKIPPED";
+export type InterviewSessionStatus = "IN_PROGRESS" | "READY_FOR_CONFIRMATION" | "CONFIRMED";
+export type OpenQuestionStatus = "OPEN" | "ACKNOWLEDGED_UNKNOWN" | "RESOLVED";
+export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
+
+export interface InterviewQuestionResponse {
+  questionKey: string;
+  category: InterviewCategory;
+  questionText: string;
+  whyWeAsk: string;
+  riskLevel: RiskLevel;
+}
+
+export interface InterviewAnswerResponse {
+  id: string;
+  questionKey: string;
+  category: InterviewCategory;
+  questionText: string;
+  whyWeAsk: string;
+  disposition: InterviewAnswerDisposition;
+  answerText?: string | null;
+  revisionNumber: number;
+  current: boolean;
+  createdAt: string;
+}
+
+export interface InterviewAssumptionResponse {
+  id: string;
+  category: InterviewCategory;
+  statement: string;
+  rationale: string;
+  impact: RiskLevel;
+  status: "OPEN" | "RESOLVED";
+  material: boolean;
+}
+
+export interface InterviewOpenQuestionResponse {
+  id: string;
+  questionKey: string;
+  category: InterviewCategory;
+  questionText: string;
+  reason: string;
+  riskLevel: RiskLevel;
+  status: OpenQuestionStatus;
+  material: boolean;
+}
+
+export interface InterviewDecisionResponse {
+  id: string;
+  category: InterviewCategory;
+  statement: string;
+  rationale: string;
+  status: "ACTIVE" | "SUPERSEDED";
+}
+
+export interface InterviewReadinessResponse {
+  minimumComplete: boolean;
+  generationReady: boolean;
+  answeredRequiredCategories: number;
+  requiredCategoryCount: number;
+  blockers: string[];
+  snapshot: Record<string, unknown>;
+}
+
+export interface InterviewBriefResponse {
+  version: number;
+  content: Record<string, unknown>;
+  confirmedAt?: string | null;
+}
+
+export interface InterviewSessionResponse {
+  id: string;
+  projectId: string;
+  status: InterviewSessionStatus;
+  nextQuestion?: InterviewQuestionResponse | null;
+  answers: InterviewAnswerResponse[];
+  assumptions: InterviewAssumptionResponse[];
+  openQuestions: InterviewOpenQuestionResponse[];
+  decisions: InterviewDecisionResponse[];
+  brief: InterviewBriefResponse;
+  readiness: InterviewReadinessResponse;
+  reopenedAt?: string | null;
+  updatedAt: string;
+}
+
+export interface InterviewAnswerRequest {
+  questionKey: string;
+  disposition: InterviewAnswerDisposition;
+  answerText?: string;
+}
+
+/* ================================================================== */
+/*  Types — Governed evidence and SRS                                  */
+/* ================================================================== */
+
+export type KnowledgeSourceStatus =
+  | "PENDING_REVIEW"
+  | "APPROVED"
+  | "QUARANTINED"
+  | "REJECTED"
+  | "EXPIRED"
+  | "DELETED";
+
+export interface KnowledgeSourceResponse {
+  id: string;
+  title: string;
+  originalFilename: string;
+  mediaType: string;
+  classification: string;
+  status: KnowledgeSourceStatus;
+  scanMetadata: Record<string, unknown>;
+  chunkCount: number;
+  approvedAt?: string | null;
+  createdAt: string;
+}
+
+export interface StandardsProfileResponse {
+  key: "STARTER" | "STARTUP" | string;
+  name: string;
+  description: string;
+  controls: string[];
+  sourceLicense: string;
+  ownerName: string;
+  effectiveDate: string;
+}
+
+export interface SrsTraceLinkResponse {
+  sourceId?: string | null;
+  chunkId?: string | null;
+  linkType: "EVIDENCE" | "ASSUMPTION" | "CONTROL" | string;
+}
+
+export interface SrsRequirementResponse {
+  id: string;
+  requirementId: string;
+  type: "FUNCTIONAL" | "NON_FUNCTIONAL" | string;
+  priority: "MUST" | "SHOULD" | "COULD" | string;
+  statement: string;
+  rationale: string;
+  acceptanceCriteria: string;
+  sourceKind: "CITATION" | "ASSUMPTION" | string;
+  sourceDetail: string;
+  verificationMethod: string;
+  qualityOutcome: Record<string, unknown>;
+  traceLinks: SrsTraceLinkResponse[];
+}
+
+export interface SrsVersionResponse {
+  id: string;
+  versionNumber: number;
+  status: "DRAFT" | "NEEDS_REVIEW" | "APPROVED" | "CHANGES_REQUESTED";
+  profileKey: string;
+  content: Record<string, unknown>;
+  validation: { valid?: boolean; issues?: string[]; citation_coverage?: number; citationCoverage?: number };
+  citationCoverage: number;
+  provider: string;
+  model: string;
+  promptVersion: string;
+  generatedAt: string;
+  approvedAt?: string | null;
+  changeRequest?: string | null;
+  requirements: SrsRequirementResponse[];
+}
+
+/* ================================================================== */
+/*  Types — Linked documentation package                               */
+/* ================================================================== */
+
+export type DocumentationArtifactType = "SRS" | "USE_CASES" | "ERD" | "OPENAPI" | "TRACEABILITY";
+export type DocumentationExportFormat = "ZIP" | "MARKDOWN" | "PDF" | "DOCX" | "OPENAPI_JSON" | "OPENAPI_YAML" | "UML_SOURCE" | "ERD_SOURCE";
+
+export interface DocumentationArtifactResponse {
+  type: DocumentationArtifactType;
+  title: string;
+  content: string;
+  sourceFormat: string;
+  sourceContent: string;
+  checksum: string;
+  validation: { valid?: boolean; validator?: string; issues?: string[] };
+}
+
+export interface DocumentationTraceResponse {
+  requirementId: string;
+  useCaseId?: string | null;
+  entityId?: string | null;
+  apiOperationId?: string | null;
+  acceptanceCriterionId: string;
+  sourceKind: string;
+}
+
+export interface DocumentationPackageResponse {
+  id: string;
+  versionNumber: number;
+  status: "NEEDS_REVIEW" | "APPROVED" | "CHANGES_REQUESTED" | string;
+  srsVersionId: string;
+  generatedAt: string;
+  approvedAt?: string | null;
+  canonicalModel: Record<string, unknown>;
+  validation: { valid?: boolean; issues?: string[]; requirementsChecked?: number; traceLinksChecked?: number };
+  artifacts: DocumentationArtifactResponse[];
+  traceLinks: DocumentationTraceResponse[];
+}
+
+export interface DocumentationExportResponse {
+  id: string;
+  format: DocumentationExportFormat;
+  status: "READY" | "FAILED" | string;
+  filename: string;
+  contentType: string;
+  byteSize: number;
+  sha256: string;
+  completedAt?: string | null;
+  createdAt: string;
 }
 
 /* ================================================================== */
@@ -333,6 +611,69 @@ export interface CreateDocumentRequest {
 export interface UpdateDocumentRequest {
   title?: string;
   content?: string;
+}
+
+/* ================================================================== */
+/*  Types — Generation Jobs                                            */
+/* ================================================================== */
+
+/**
+ * A generation job is the durable server-side record for one request.
+ * These statuses deliberately describe work stages instead of inventing a
+ * percentage, which would be misleading while providers execute remotely.
+ */
+export type GenerationJobStatus =
+  | "QUEUED"
+  | "RETRIEVING"
+  | "DRAFTING"
+  | "VALIDATING"
+  | "NEEDS_INPUT"
+  | "READY"
+  | "FAILED"
+  | "CANCELLED";
+
+export interface GenerationJobResponse {
+  /** Backends may expose either id or jobId; clients normalise it with getGenerationJobId. */
+  id?: string;
+  jobId?: string;
+  projectId: string;
+  status: GenerationJobStatus;
+  statusMessage?: string | null;
+  message?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  userMessage?: string | null;
+  retryable?: boolean;
+  attempt?: number;
+  attemptCount?: number;
+  maxAttempts?: number;
+  cancelRequested?: boolean;
+  correlationId?: string;
+  idempotencyKey?: string;
+  documentId?: string | null;
+  artifactVersionId?: string | null;
+  requestedDocumentType?: DocumentType;
+  queuedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  cancelledAt?: string | null;
+  nextAttemptAt?: string | null;
+}
+
+export interface CreateGenerationJobRequest {
+  /** The backend currently uses SRS for its small structured test artifact. */
+  documentType: DocumentType;
+  additionalInstructions?: string;
+}
+
+export type GenerationJobListData =
+  | GenerationJobResponse[]
+  | PaginatedData<GenerationJobResponse>;
+
+export function getGenerationJobId(job: GenerationJobResponse): string | null {
+  return job.id ?? job.jobId ?? null;
 }
 
 /* ================================================================== */
@@ -452,7 +793,135 @@ export const projectApi = {
 
   duplicate: (id: string) =>
     apiClient<ProjectResponse>(`/v1/projects/${id}/duplicate`, { method: "POST" }),
+
+  updateStatus: (id: string, body: UpdateProjectStatusRequest) =>
+    apiClient<ProjectResponse>(`/v1/projects/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  archive: (id: string) =>
+    apiClient<ProjectResponse>(`/v1/projects/${id}/archive`, { method: "POST" }),
+
+  restore: (id: string) =>
+    apiClient<ProjectResponse>(`/v1/projects/${id}/restore`, { method: "POST" }),
 };
+
+/* ================================================================== */
+/*  Discovery Interview API                                            */
+/* ================================================================== */
+
+export const interviewApi = {
+  start: (projectId: string) =>
+    apiClient<InterviewSessionResponse>(`/v1/projects/${projectId}/interview/start`, {
+      method: "POST",
+    }),
+
+  summary: (projectId: string) =>
+    apiClient<InterviewSessionResponse>(`/v1/projects/${projectId}/interview`, {
+      method: "GET",
+    }),
+
+  answer: (projectId: string, body: InterviewAnswerRequest) =>
+    apiClient<InterviewSessionResponse>(`/v1/projects/${projectId}/interview/answers`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  reviseAnswer: (projectId: string, answerId: string, body: InterviewAnswerRequest) =>
+    apiClient<InterviewSessionResponse>(`/v1/projects/${projectId}/interview/answers/${answerId}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  confirm: (projectId: string) =>
+    apiClient<InterviewSessionResponse>(`/v1/projects/${projectId}/interview/confirm`, {
+      method: "POST",
+    }),
+
+  reopen: (projectId: string) =>
+    apiClient<InterviewSessionResponse>(`/v1/projects/${projectId}/interview/reopen`, {
+      method: "POST",
+    }),
+};
+
+/* ================================================================== */
+/*  Governed evidence / SRS API                                        */
+/* ================================================================== */
+
+export const knowledgeSourceApi = {
+  list: (projectId: string) =>
+    apiClient<KnowledgeSourceResponse[]>(`/v1/projects/${projectId}/knowledge-sources`, { method: "GET" }),
+
+  upload: (projectId: string, file: File, title?: string) => {
+    const body = new FormData();
+    body.set("file", file);
+    if (title?.trim()) body.set("title", title.trim());
+    return apiClient<KnowledgeSourceResponse>(`/v1/projects/${projectId}/knowledge-sources`, { method: "POST", body });
+  },
+
+  approve: (projectId: string, sourceId: string) =>
+    apiClient<KnowledgeSourceResponse>(`/v1/projects/${projectId}/knowledge-sources/${sourceId}/approve`, { method: "POST" }),
+
+  reject: (projectId: string, sourceId: string) =>
+    apiClient<KnowledgeSourceResponse>(`/v1/projects/${projectId}/knowledge-sources/${sourceId}/reject`, { method: "POST" }),
+
+  delete: (projectId: string, sourceId: string) =>
+    apiClient<void>(`/v1/projects/${projectId}/knowledge-sources/${sourceId}`, { method: "DELETE" }),
+};
+
+export const srsApi = {
+  profiles: (projectId: string) =>
+    apiClient<StandardsProfileResponse[]>(`/v1/projects/${projectId}/srs/profiles`, { method: "GET" }),
+
+  list: (projectId: string) =>
+    apiClient<SrsVersionResponse[]>(`/v1/projects/${projectId}/srs`, { method: "GET" }),
+
+  generate: (projectId: string, profileKey: string) =>
+    apiClient<SrsVersionResponse>(`/v1/projects/${projectId}/srs/generate`, {
+      method: "POST", body: JSON.stringify({ profileKey }),
+    }),
+
+  approve: (projectId: string, versionId: string) =>
+    apiClient<SrsVersionResponse>(`/v1/projects/${projectId}/srs/${versionId}/approve`, { method: "POST" }),
+
+  requestChanges: (projectId: string, versionId: string, message: string) =>
+    apiClient<SrsVersionResponse>(`/v1/projects/${projectId}/srs/${versionId}/request-changes`, {
+      method: "POST", body: JSON.stringify({ message }),
+    }),
+};
+
+export const documentationPackageApi = {
+  list: (projectId: string) =>
+    apiClient<DocumentationPackageResponse[]>(`/v1/projects/${projectId}/documentation-packages`, { method: "GET" }),
+  generate: (projectId: string, srsVersionId: string) =>
+    apiClient<DocumentationPackageResponse>(`/v1/projects/${projectId}/documentation-packages`, {
+      method: "POST", body: JSON.stringify({ srsVersionId }),
+    }),
+  approve: (projectId: string, packageId: string) =>
+    apiClient<DocumentationPackageResponse>(`/v1/projects/${projectId}/documentation-packages/${packageId}/approve`, { method: "POST" }),
+  exports: (projectId: string, packageId: string) =>
+    apiClient<DocumentationExportResponse[]>(`/v1/projects/${projectId}/documentation-packages/${packageId}/exports`, { method: "GET" }),
+  export: (projectId: string, packageId: string, format: DocumentationExportFormat) =>
+    apiClient<DocumentationExportResponse>(`/v1/projects/${projectId}/documentation-packages/${packageId}/exports`, {
+      method: "POST", body: JSON.stringify({ format }),
+    }),
+};
+
+export async function downloadDocumentationExport(projectId: string, packageId: string, exportId: string, filename: string): Promise<string | null> {
+  const token = Cookies.get("accessToken");
+  try {
+    const response = await fetch(`${API_BASE}/v1/projects/${projectId}/documentation-packages/${packageId}/exports/${exportId}/download`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}, credentials: "include",
+    });
+    if (!response.ok) return "The export could not be downloaded.";
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a"); link.href = url; link.download = filename; document.body.appendChild(link); link.click(); link.remove();
+    URL.revokeObjectURL(url);
+    return null;
+  } catch { return "Network error while downloading the export."; }
+}
 
 /* ================================================================== */
 /*  Document API                                                       */
@@ -499,6 +968,53 @@ export const documentApi = {
     apiClient<void>(
       `/v1/projects/${projectId}/documents/${documentId}`,
       { method: "DELETE" }
+  ),
+};
+
+/* ================================================================== */
+/*  Generation Job API                                                 */
+/* ================================================================== */
+
+export const generationJobApi = {
+  list: (projectId: string) =>
+    apiClient<GenerationJobListData>(
+      `/v1/projects/${projectId}/generation-jobs`,
+      { method: "GET" }
+    ),
+
+  get: (projectId: string, jobId: string) =>
+    apiClient<GenerationJobResponse>(
+      `/v1/projects/${projectId}/generation-jobs/${jobId}`,
+      { method: "GET" }
+    ),
+
+  create: (
+    projectId: string,
+    body: CreateGenerationJobRequest,
+    idempotencyKey: string
+  ) =>
+    apiClient<GenerationJobResponse>(
+      `/v1/projects/${projectId}/generation-jobs`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify(body),
+      }
+    ),
+
+  cancel: (projectId: string, jobId: string) =>
+    apiClient<GenerationJobResponse>(
+      `/v1/projects/${projectId}/generation-jobs/${jobId}/cancel`,
+      { method: "POST" }
+    ),
+
+  retry: (projectId: string, jobId: string, idempotencyKey: string) =>
+    apiClient<GenerationJobResponse>(
+      `/v1/projects/${projectId}/generation-jobs/${jobId}/retry`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+      }
     ),
 };
 
