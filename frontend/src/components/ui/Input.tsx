@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, type InputHTMLAttributes, useState } from "react";
+import { forwardRef, type InputHTMLAttributes, useId, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Eye, EyeOff } from "lucide-react";
 
@@ -11,14 +11,18 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ className, label, error, icon, type, ...props }, ref) => {
+  ({ className, label, error, icon, type, id, "aria-describedby": ariaDescribedBy, "aria-invalid": ariaInvalid, ...props }, ref) => {
     const [showPassword, setShowPassword] = useState(false);
     const isPassword = type === "password";
+    const generatedId = useId();
+    const inputId = id ?? generatedId;
+    const errorId = `${inputId}-error`;
+    const describedBy = [ariaDescribedBy, error ? errorId : undefined].filter(Boolean).join(" ") || undefined;
 
     return (
       <div className="w-full space-y-1.5">
         {label && (
-          <label className="block text-sm font-medium text-foreground-secondary">
+          <label htmlFor={inputId} className="block font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-foreground-secondary">
             {label}
           </label>
         )}
@@ -30,11 +34,12 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
           )}
           <input
             ref={ref}
+            id={inputId}
             type={isPassword && showPassword ? "text" : type}
             className={cn(
-              "w-full rounded-xl border border-input-border bg-input-bg px-4 py-3 text-foreground",
-              "placeholder:text-placeholder transition-all duration-200",
-              "focus:outline-none focus:border-input-focus focus:ring-2 focus:ring-primary/20",
+              "w-full rounded-md border border-input-border bg-input-bg px-3.5 py-2.5 text-sm text-foreground",
+              "placeholder:text-placeholder transition-colors duration-150",
+              "focus:outline-none focus:border-input-focus focus:ring-2 focus:ring-accent/20",
               "disabled:opacity-50 disabled:cursor-not-allowed",
               icon && "ps-10",
               isPassword && "pe-10",
@@ -42,12 +47,15 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
               className
             )}
             {...props}
+            aria-describedby={describedBy}
+            aria-invalid={error ? true : ariaInvalid}
           />
           {isPassword && (
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
               className="absolute inset-y-0 end-0 flex items-center pe-3 text-placeholder hover:text-foreground transition-colors"
+              aria-label={showPassword ? "Hide password" : "Show password"}
             >
               {showPassword ? (
                 <EyeOff className="h-4 w-4" />
@@ -58,7 +66,7 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
           )}
         </div>
         {error && (
-          <p className="text-sm text-error mt-1">{error}</p>
+          <p id={errorId} className="mt-1 font-mono text-xs text-error" role="alert">{error}</p>
         )}
       </div>
     );

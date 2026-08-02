@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 
 export default function CursorFollower() {
   const dotRef = useRef<HTMLDivElement>(null);
@@ -9,21 +9,6 @@ export default function CursorFollower() {
   const circlePos = useRef({ x: 0, y: 0 });
   const rafId = useRef<number>(0);
   const isHovering = useRef(false);
-
-  const animate = useCallback(() => {
-    const lerp = 0.15;
-    circlePos.current.x += (mouse.current.x - circlePos.current.x) * lerp;
-    circlePos.current.y += (mouse.current.y - circlePos.current.y) * lerp;
-
-    if (dotRef.current) {
-      dotRef.current.style.transform = `translate(${mouse.current.x - 4}px, ${mouse.current.y - 4}px)`;
-    }
-    if (circleRef.current) {
-      circleRef.current.style.transform = `translate(${circlePos.current.x - 18}px, ${circlePos.current.y - 18}px) scale(${isHovering.current ? 1.5 : 1})`;
-    }
-
-    rafId.current = requestAnimationFrame(animate);
-  }, []);
 
   useEffect(() => {
     // Don't render on touch devices
@@ -44,6 +29,21 @@ export default function CursorFollower() {
       isHovering.current = false;
       dotRef.current?.classList.remove("hover");
       circleRef.current?.classList.remove("hover");
+    };
+
+    const animate = () => {
+      const lerp = 0.15;
+      circlePos.current.x += (mouse.current.x - circlePos.current.x) * lerp;
+      circlePos.current.y += (mouse.current.y - circlePos.current.y) * lerp;
+
+      if (dotRef.current) {
+        dotRef.current.style.transform = `translate(${mouse.current.x - 4}px, ${mouse.current.y - 4}px)`;
+      }
+      if (circleRef.current) {
+        circleRef.current.style.transform = `translate(${circlePos.current.x - 18}px, ${circlePos.current.y - 18}px) scale(${isHovering.current ? 1.5 : 1})`;
+      }
+
+      rafId.current = requestAnimationFrame(animate);
     };
 
     document.addEventListener("mousemove", handleMove, { passive: true });
@@ -80,7 +80,7 @@ export default function CursorFollower() {
         el.removeEventListener("mouseleave", handleLeave);
       });
     };
-  }, [animate]);
+  }, []);
 
   // Hide on touch devices via CSS (class already in globals.css)
   return (
