@@ -4,7 +4,6 @@ import { useState, useCallback } from "react";
 import { GoogleLogin, type CredentialResponse } from "@react-oauth/google";
 import { useAuthStore } from "@/store/authStore";
 import { useLocale } from "@/providers/LocaleProvider";
-import { useTheme } from "@/providers/ThemeProvider";
 import { useRouter } from "next/navigation";
 
 interface GoogleAuthButtonProps {
@@ -18,7 +17,6 @@ export default function GoogleAuthButton({
 }: GoogleAuthButtonProps) {
   const { googleLogin } = useAuthStore();
   const { t } = useLocale();
-  const { theme } = useTheme();
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
 
@@ -54,7 +52,7 @@ export default function GoogleAuthButton({
   const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
   const isConfigured = clientId && clientId !== "your-google-client-id-here";
 
-  // If Google client ID is not configured, show a disabled placeholder
+  // If Google client ID is not configured, show the explicit disabled state.
   if (!isConfigured) {
     return (
       <div className="w-full">
@@ -94,7 +92,7 @@ export default function GoogleAuthButton({
     <div className="w-full flex flex-col items-center">
       {isLoading ? (
         <div className="w-full flex items-center justify-center gap-3 px-4 py-3 rounded-xl border border-border bg-card text-foreground-secondary text-sm font-medium">
-          <div className="h-5 w-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <div className="h-5 w-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
           Signing in with Google...
         </div>
       ) : (
@@ -102,7 +100,7 @@ export default function GoogleAuthButton({
           <GoogleLogin
             onSuccess={handleSuccess}
             onError={handleError}
-            theme={theme === "dark" ? "filled_black" : "outline"}
+            theme="outline"
             size="large"
             width="400"
             text="continue_with"

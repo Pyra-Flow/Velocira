@@ -7,84 +7,35 @@ import {
   FolderKanban,
   FileText,
   Activity,
-  TrendingUp,
   ArrowUpRight,
   ArrowDownRight,
   Shield,
-  Download,
-  ScrollText,
   ChevronRight,
-  Server,
-  Database,
-  Brain,
   Circle,
   Clock,
   Mail,
-  AlertTriangle,
   Loader2,
   ShieldCheck,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useLocale } from "@/providers/LocaleProvider";
 import { useAuthStore } from "@/store/authStore";
 import {
   adminApi,
+  type AuditLogResponse,
   type AdminAnalyticsResponse,
   type AdminUserResponse,
 } from "@/lib/api";
 import { formatRelativeTime, getInitials } from "@/lib/utils";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
+import AdminAuditTimeline from "@/components/admin/AdminAuditTimeline";
 import {
   FadeIn,
   StaggerContainer,
   StaggerItem,
   PageTransition,
 } from "@/components/ui/Animations";
-
-/* ------------------------------------------------------------------ */
-/*  Static Data (platform health — not from API)                       */
-/* ------------------------------------------------------------------ */
-
-const platformHealth = [
-  {
-    service: "Backend API",
-    status: "operational" as const,
-    uptime: "99.98%",
-    icon: Server,
-  },
-  {
-    service: "ML Service",
-    status: "degraded" as const,
-    uptime: "97.12%",
-    icon: Brain,
-  },
-  {
-    service: "Database",
-    status: "operational" as const,
-    uptime: "99.99%",
-    icon: Database,
-  },
-];
-
-const statusColors = {
-  operational: "text-emerald-400",
-  degraded: "text-amber-400",
-  down: "text-red-400",
-};
-
-const statusBg = {
-  operational: "bg-emerald-500/20",
-  degraded: "bg-amber-500/20",
-  down: "bg-red-500/20",
-};
-
-const statusLabel = {
-  operational: "Operational",
-  degraded: "Degraded",
-  down: "Down",
-};
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -101,11 +52,11 @@ const formatType = (type: string) =>
 
 export default function AdminDashboard() {
   const router = useRouter();
-  const { t } = useLocale();
   const { user, isAuthenticated, isLoading } = useAuthStore();
 
   const [analytics, setAnalytics] = useState<AdminAnalyticsResponse | null>(null);
   const [recentUsers, setRecentUsers] = useState<AdminUserResponse[]>([]);
+  const [auditEvents, setAuditEvents] = useState<AuditLogResponse[]>([]);
   const [loadingData, setLoadingData] = useState(true);
 
   /* ---- Auth guard ---- */
@@ -122,9 +73,10 @@ export default function AdminDashboard() {
     const load = async () => {
       setLoadingData(true);
       try {
-        const [analyticsRes, usersRes] = await Promise.all([
+        const [analyticsRes, usersRes, auditRes] = await Promise.all([
           adminApi.analytics(),
           adminApi.listUsers({ page: 0, size: 5 }),
+          adminApi.auditLogs({ page: 0, size: 6 }),
         ]);
 
         if (analyticsRes.success && analyticsRes.data) {
@@ -132,6 +84,9 @@ export default function AdminDashboard() {
         }
         if (usersRes.success && usersRes.data) {
           setRecentUsers(usersRes.data.content);
+        }
+        if (auditRes.success && auditRes.data) {
+          setAuditEvents(auditRes.data.content);
         }
       } catch {
         /* fail silently for dashboard */
@@ -146,7 +101,7 @@ export default function AdminDashboard() {
   if (isLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-background-secondary">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <Loader2 className="h-8 w-8 animate-spin text-accent" />
       </div>
     );
   }
@@ -156,7 +111,7 @@ export default function AdminDashboard() {
   if (user?.role !== "ADMIN") {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background-secondary">
-        <ShieldCheck className="h-16 w-16 text-red-400" />
+        <ShieldCheck className="h-16 w-16 text-error" />
         <h1 className="text-2xl font-display font-bold text-foreground">
           Access Denied
         </h1>
@@ -179,8 +134,8 @@ export default function AdminDashboard() {
           change: `+${analytics.newUsersLast30Days} this month`,
           trend: "up" as const,
           icon: Users,
-          color: "text-blue-400",
-          bg: "bg-blue-500/10",
+          color: "text-info",
+          bg: "bg-info/10",
         },
         {
           label: "Total Projects",
@@ -188,8 +143,8 @@ export default function AdminDashboard() {
           change: `+${analytics.newProjectsLast30Days} this month`,
           trend: "up" as const,
           icon: FolderKanban,
-          color: "text-violet-400",
-          bg: "bg-violet-500/10",
+          color: "text-accent",
+          bg: "bg-accent-light",
         },
         {
           label: "Documents Generated",
@@ -197,8 +152,8 @@ export default function AdminDashboard() {
           change: `${analytics.completedDocuments} completed`,
           trend: "up" as const,
           icon: FileText,
-          color: "text-emerald-400",
-          bg: "bg-emerald-500/10",
+          color: "text-success",
+          bg: "bg-success/10",
         },
         {
           label: "Active (7d)",
@@ -209,8 +164,8 @@ export default function AdminDashboard() {
               ? ("up" as const)
               : ("down" as const),
           icon: Activity,
-          color: "text-amber-400",
-          bg: "bg-amber-500/10",
+          color: "text-warning",
+          bg: "bg-warning/10",
         },
       ]
     : [];
@@ -230,34 +185,35 @@ export default function AdminDashboard() {
     : [];
 
   const typeColors = [
-    "bg-blue-500",
-    "bg-violet-500",
-    "bg-emerald-500",
-    "bg-amber-500",
-    "bg-rose-500",
-    "bg-cyan-500",
+    "bg-accent",
+    "bg-info",
+    "bg-success",
+    "bg-warning",
+    "bg-error",
+    "bg-accent",
   ];
 
   return (
     <PageTransition>
-      <main className="min-h-screen bg-background-secondary">
-        <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
+      <section className="workspace-page">
+        <div className="workspace-page__inner max-w-7xl">
           {/* ---------- Header ---------- */}
           <FadeIn>
             <div className="mb-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
-                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
-                  <Shield className="h-6 w-6 text-primary" />
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-accent-light">
+                  <Shield className="h-6 w-6 text-accent" />
                 </div>
                 <div>
-                  <h1 className="text-3xl font-display font-bold gradient-text">
+                  <p className="workspace-page__eyebrow">System operations</p>
+                  <h1 className="workspace-page__title text-3xl">
                     Admin Panel
                   </h1>
                   <p className="text-sm text-foreground-secondary">
                     Platform analytics &amp; overview
                   </p>
                 </div>
-                <span className="ml-2 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary border border-primary/20">
+                <span className="status-badge status-badge--ready ml-2">
                   ADMIN
                 </span>
               </div>
@@ -280,7 +236,7 @@ export default function AdminDashboard() {
           {/* ---------- Stats Overview ---------- */}
           {loadingData ? (
             <div className="flex items-center justify-center py-20">
-              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+              <Loader2 className="h-6 w-6 animate-spin text-accent" />
             </div>
           ) : (
             <>
@@ -298,15 +254,15 @@ export default function AdminDashboard() {
                           </p>
                           <div className="mt-2 flex items-center gap-1 text-sm">
                             {stat.trend === "up" ? (
-                              <ArrowUpRight className="h-4 w-4 text-emerald-400" />
+                              <ArrowUpRight className="h-4 w-4 text-success" />
                             ) : (
-                              <ArrowDownRight className="h-4 w-4 text-red-400" />
+                              <ArrowDownRight className="h-4 w-4 text-error" />
                             )}
                             <span
                               className={
                                 stat.trend === "up"
-                                  ? "text-emerald-400"
-                                  : "text-red-400"
+                                  ? "text-success"
+                                  : "text-error"
                               }
                             >
                               {stat.change}
@@ -314,7 +270,7 @@ export default function AdminDashboard() {
                           </div>
                         </div>
                         <div
-                          className={`flex h-10 w-10 items-center justify-center rounded-xl ${stat.bg}`}
+                          className={`flex h-10 w-10 items-center justify-center rounded-lg ${stat.bg}`}
                         >
                           <stat.icon className={`h-5 w-5 ${stat.color}`} />
                         </div>
@@ -346,9 +302,9 @@ export default function AdminDashboard() {
                               {type.count} ({type.percent}%)
                             </span>
                           </div>
-                          <div className="h-2.5 w-full overflow-hidden rounded-full bg-background-secondary">
+                          <div className="h-2.5 w-full overflow-hidden rounded bg-background-secondary">
                             <motion.div
-                              className={`h-full rounded-full ${typeColors[i % typeColors.length]}`}
+                              className={`h-full rounded ${typeColors[i % typeColors.length]}`}
                               initial={{ width: 0 }}
                               whileInView={{ width: `${type.percent}%` }}
                               viewport={{ once: true }}
@@ -365,6 +321,10 @@ export default function AdminDashboard() {
                   </Card>
                 </FadeIn>
               )}
+
+              <FadeIn delay={0.12} className="mb-8">
+                <AdminAuditTimeline events={auditEvents} />
+              </FadeIn>
 
               {/* ---------- Recent Registrations ---------- */}
               <FadeIn delay={0.15} className="mb-8">
@@ -409,7 +369,7 @@ export default function AdminDashboard() {
                             <tr key={u.id} className="group">
                               <td className="py-3 pr-4">
                                 <div className="flex items-center gap-3">
-                                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent-light text-sm font-semibold text-accent">
                                     {getInitials(u.fullName)}
                                   </div>
                                   <span className="font-medium text-foreground">
@@ -428,10 +388,10 @@ export default function AdminDashboard() {
                               </td>
                               <td className="py-3">
                                 <span
-                                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                                  className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-0.5 text-xs font-medium ${
                                     u.active
-                                      ? "bg-emerald-500/10 text-emerald-400"
-                                      : "bg-red-500/10 text-red-400"
+                                      ? "border-success/30 bg-success/10 text-success"
+                                      : "border-error/30 bg-error/10 text-error"
                                   }`}
                                 >
                                   <Circle className="h-1.5 w-1.5 fill-current" />
@@ -447,145 +407,21 @@ export default function AdminDashboard() {
                 </Card>
               </FadeIn>
 
-              {/* ---------- Platform Health & Quick Actions ---------- */}
-              <div className="grid gap-6 lg:grid-cols-2">
-                {/* Platform Health */}
-                <FadeIn delay={0.2}>
-                  <Card>
-                    <div className="mb-6">
-                      <h2 className="text-lg font-display font-semibold text-foreground">
-                        Platform Health
-                      </h2>
-                      <p className="text-sm text-foreground-secondary">
-                        Service status overview
-                      </p>
+              <FadeIn delay={0.2}>
+                <Card>
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h2 className="text-lg font-display font-semibold text-foreground">Administration</h2>
+                      <p className="mt-1 text-sm text-foreground-secondary">Manage user accounts and roles. Live platform-health, log-viewing, and report-export tools are not available yet.</p>
                     </div>
-
-                    <div className="space-y-4">
-                      {platformHealth.map((service) => (
-                        <div
-                          key={service.service}
-                          className="flex items-center justify-between rounded-xl border border-border bg-background-secondary p-4"
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-card">
-                              <service.icon className="h-5 w-5 text-foreground-secondary" />
-                            </div>
-                            <div>
-                              <p className="font-medium text-foreground">
-                                {service.service}
-                              </p>
-                              <p className="text-xs text-foreground-secondary">
-                                Uptime: {service.uptime}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {service.status === "degraded" && (
-                              <AlertTriangle className="h-4 w-4 text-amber-400" />
-                            )}
-                            <span
-                              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${
-                                statusBg[service.status]
-                              } ${statusColors[service.status]}`}
-                            >
-                              <Circle className="h-1.5 w-1.5 fill-current" />
-                              {statusLabel[service.status]}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </Card>
-                </FadeIn>
-
-                {/* Quick Actions */}
-                <FadeIn delay={0.25}>
-                  <Card className="flex h-full flex-col">
-                    <div className="mb-6">
-                      <h2 className="text-lg font-display font-semibold text-foreground">
-                        Quick Actions
-                      </h2>
-                      <p className="text-sm text-foreground-secondary">
-                        Common admin operations
-                      </p>
-                    </div>
-
-                    <div className="flex flex-1 flex-col gap-3">
-                      <Link href="/admin/users" className="block">
-                        <motion.div
-                          whileHover={{ scale: 1.01 }}
-                          whileTap={{ scale: 0.99 }}
-                          className="flex items-center justify-between rounded-xl border border-border bg-background-secondary p-4 cursor-pointer hover:border-primary/30 transition-colors"
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
-                              <Users className="h-5 w-5 text-blue-400" />
-                            </div>
-                            <div>
-                              <p className="font-medium text-foreground">
-                                View All Users
-                              </p>
-                              <p className="text-xs text-foreground-secondary">
-                                Manage user accounts &amp; roles
-                              </p>
-                            </div>
-                          </div>
-                          <ChevronRight className="h-5 w-5 text-foreground-secondary" />
-                        </motion.div>
-                      </Link>
-
-                      <motion.div
-                        whileHover={{ scale: 1.01 }}
-                        whileTap={{ scale: 0.99 }}
-                        className="flex items-center justify-between rounded-xl border border-border bg-background-secondary p-4 cursor-pointer hover:border-primary/30 transition-colors"
-                        onClick={() => {}}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10">
-                            <Download className="h-5 w-5 text-emerald-400" />
-                          </div>
-                          <div>
-                            <p className="font-medium text-foreground">
-                              Export Report
-                            </p>
-                            <p className="text-xs text-foreground-secondary">
-                              Download analytics as CSV
-                            </p>
-                          </div>
-                        </div>
-                        <ChevronRight className="h-5 w-5 text-foreground-secondary" />
-                      </motion.div>
-
-                      <motion.div
-                        whileHover={{ scale: 1.01 }}
-                        whileTap={{ scale: 0.99 }}
-                        className="flex items-center justify-between rounded-xl border border-border bg-background-secondary p-4 cursor-pointer hover:border-primary/30 transition-colors"
-                        onClick={() => {}}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-violet-500/10">
-                            <ScrollText className="h-5 w-5 text-violet-400" />
-                          </div>
-                          <div>
-                            <p className="font-medium text-foreground">
-                              System Logs
-                            </p>
-                            <p className="text-xs text-foreground-secondary">
-                              View server &amp; application logs
-                            </p>
-                          </div>
-                        </div>
-                        <ChevronRight className="h-5 w-5 text-foreground-secondary" />
-                      </motion.div>
-                    </div>
-                  </Card>
-                </FadeIn>
-              </div>
+                    <Link href="/admin/users"><Button icon={<Users className="h-4 w-4" />}>Manage Users</Button></Link>
+                  </div>
+                </Card>
+              </FadeIn>
             </>
           )}
         </div>
-      </main>
+      </section>
     </PageTransition>
   );
 }

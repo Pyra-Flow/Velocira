@@ -26,8 +26,9 @@ interface AuthState {
 }
 
 function storeTokens(data: AuthResponse) {
-  Cookies.set("accessToken", data.accessToken, { expires: 1, secure: true, sameSite: "strict" });
-  Cookies.set("refreshToken", data.refreshToken, { expires: 30, secure: true, sameSite: "strict" });
+  const secure = typeof window !== "undefined" && window.location.protocol === "https:";
+  Cookies.set("accessToken", data.accessToken, { expires: 1, secure, sameSite: "strict" });
+  Cookies.set("refreshToken", data.refreshToken, { expires: 30, secure, sameSite: "strict" });
 }
 
 function clearTokens() {

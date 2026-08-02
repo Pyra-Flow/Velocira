@@ -11,10 +11,7 @@ import {
   LayoutList,
   FileText,
   Clock,
-  CheckCircle2,
-  AlertTriangle,
   Loader2,
-  PenLine,
   ChevronRight,
   FolderOpen,
   Sparkles,
@@ -26,53 +23,25 @@ import {
   Monitor,
   ChevronLeft,
 } from "lucide-react";
-import { useLocale } from "@/providers/LocaleProvider";
 import { useAuthStore } from "@/store/authStore";
 import { useProjectStore } from "@/store/projectStore";
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
+import StatusBadge from "@/components/ui/StatusBadge";
+import SignalMeter from "@/components/ui/SignalMeter";
 import {
   FadeIn,
   StaggerContainer,
   StaggerItem,
   PageTransition,
 } from "@/components/ui/Animations";
+import WorkspacePageHeader from "@/components/workspace/WorkspacePageHeader";
 import { formatRelativeTime } from "@/lib/utils";
 import type { ProjectResponse, ProjectStatus, ProjectType } from "@/lib/api";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
-
-const STATUS_CONFIG: Record<
-  ProjectStatus,
-  { color: string; bg: string; icon: React.ReactNode; label: string }
-> = {
-  DRAFT: {
-    color: "text-foreground-secondary",
-    bg: "bg-background-secondary",
-    icon: <PenLine className="h-3 w-3" />,
-    label: "Draft",
-  },
-  GENERATING: {
-    color: "text-info",
-    bg: "bg-info/10",
-    icon: <Loader2 className="h-3 w-3 animate-spin" />,
-    label: "Generating",
-  },
-  COMPLETE: {
-    color: "text-success",
-    bg: "bg-success/10",
-    icon: <CheckCircle2 className="h-3 w-3" />,
-    label: "Complete",
-  },
-  FAILED: {
-    color: "text-error",
-    bg: "bg-error/10",
-    icon: <AlertTriangle className="h-3 w-3" />,
-    label: "Failed",
-  },
-};
 
 const TYPE_ICON: Record<ProjectType, React.ReactNode> = {
   WEB_APP: <Globe className="h-3.5 w-3.5" />,
@@ -95,9 +64,13 @@ const TYPE_LABEL: Record<ProjectType, string> = {
 const FILTER_TABS: { label: string; value: ProjectStatus | "ALL" }[] = [
   { label: "All", value: "ALL" },
   { label: "Draft", value: "DRAFT" },
+  { label: "Discovery", value: "DISCOVERY" },
+  { label: "Ready", value: "READY_FOR_GENERATION" },
   { label: "Generating", value: "GENERATING" },
-  { label: "Complete", value: "COMPLETE" },
+  { label: "Review", value: "NEEDS_REVIEW" },
+  { label: "Approved", value: "APPROVED" },
   { label: "Failed", value: "FAILED" },
+  { label: "Archived", value: "ARCHIVED" },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -105,7 +78,6 @@ const FILTER_TABS: { label: string; value: ProjectStatus | "ALL" }[] = [
 /* ------------------------------------------------------------------ */
 
 export default function ProjectsPage() {
-  const { t } = useLocale();
   const { isAuthenticated, isLoading: authLoading } = useAuthStore();
   const router = useRouter();
 
@@ -158,7 +130,7 @@ export default function ProjectsPage() {
   if (authLoading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <Loader2 className="h-8 w-8 animate-spin text-accent" />
       </div>
     );
   }
@@ -167,31 +139,18 @@ export default function ProjectsPage() {
 
   return (
     <PageTransition>
-      <section className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+      <section className="workspace-page">
+        <div className="workspace-page__inner">
         {/* -------------------------------------------------------- */}
         {/*  Header                                                   */}
         {/* -------------------------------------------------------- */}
         <FadeIn>
-          <div className="mb-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h1 className="font-display text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
-                My <span className="gradient-text">Projects</span>
-              </h1>
-              <p className="mt-1 text-foreground-secondary">
-                Manage and track all your documentation projects
-              </p>
-            </div>
-
-            <Link href="/projects/new">
-              <Button
-                variant="primary"
-                size="md"
-                icon={<Plus className="h-4 w-4" />}
-              >
-                New Project
-              </Button>
-            </Link>
-          </div>
+          <WorkspacePageHeader
+            eyebrow="Project library"
+            title="Every project, clearly staged."
+            description="Search the work in motion, surface the review blockers, and open the right project briefing without hunting through a generic list."
+            actions={<Link href="/projects/new"><Button icon={<Plus className="h-4 w-4" />}>New project</Button></Link>}
+          />
         </FadeIn>
 
         {/* -------------------------------------------------------- */}
@@ -203,33 +162,38 @@ export default function ProjectsPage() {
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-foreground-secondary" />
               <input
                 type="text"
-                placeholder="Search projects…"
+                placeholder="Search by project name or context"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full rounded-xl border border-border bg-card py-2.5 pl-10 pr-4 text-sm text-foreground placeholder:text-foreground-secondary focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30 transition-colors"
+                aria-label="Search projects"
+                className="w-full rounded-md border border-border bg-card py-2.5 pl-10 pr-4 text-sm text-foreground placeholder:text-foreground-secondary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30 transition-colors"
               />
             </div>
 
             <div className="flex items-center gap-1 rounded-xl border border-border bg-card p-1">
               <button
+                type="button"
                 onClick={() => setViewMode("grid")}
                 className={`rounded-lg p-2 transition-colors cursor-pointer ${
                   viewMode === "grid"
-                    ? "bg-primary/10 text-primary"
+                    ? "bg-accent-light text-accent"
                     : "text-foreground-secondary hover:text-foreground"
                 }`}
                 aria-label="Grid view"
+                aria-pressed={viewMode === "grid"}
               >
                 <LayoutGrid className="h-4 w-4" />
               </button>
               <button
+                type="button"
                 onClick={() => setViewMode("list")}
                 className={`rounded-lg p-2 transition-colors cursor-pointer ${
                   viewMode === "list"
-                    ? "bg-primary/10 text-primary"
+                    ? "bg-accent-light text-accent"
                     : "text-foreground-secondary hover:text-foreground"
                 }`}
                 aria-label="List view"
+                aria-pressed={viewMode === "list"}
               >
                 <LayoutList className="h-4 w-4" />
               </button>
@@ -241,16 +205,18 @@ export default function ProjectsPage() {
         {/*  Filter Tabs                                              */}
         {/* -------------------------------------------------------- */}
         <FadeIn delay={0.1}>
-          <div className="mb-8 flex flex-wrap gap-2">
+          <div className="mb-8 flex flex-wrap gap-2" aria-label="Project status filter">
             {FILTER_TABS.map((tab) => {
               const isActive = activeFilter === tab.value;
               return (
                 <button
                   key={tab.value}
+                  type="button"
+                  aria-pressed={isActive}
                   onClick={() => setActiveFilter(tab.value)}
                   className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-colors cursor-pointer ${
                     isActive
-                      ? "bg-primary/10 text-primary border border-primary/30"
+                      ? "bg-accent-light text-accent border border-accent/30"
                       : "bg-card text-foreground-secondary border border-border hover:text-foreground hover:border-border-hover"
                   }`}
                 >
@@ -265,37 +231,17 @@ export default function ProjectsPage() {
         {/*  Loading / Content                                        */}
         {/* -------------------------------------------------------- */}
         {isLoading ? (
-          <div className="flex min-h-[40vh] items-center justify-center">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <div className={viewMode === "grid" ? "grid gap-4 sm:grid-cols-2 lg:grid-cols-3" : "grid gap-3"} role="status" aria-live="polite" aria-label="Loading projects">
+            {[0, 1, 2].map((item) => <div key={item} className={`workspace-skeleton ${viewMode === "grid" ? "h-56" : "h-24"}`} />)}
           </div>
         ) : (
           <AnimatePresence mode="wait">
             {projects.length === 0 ? (
-              <motion.div
-                key="empty"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="flex flex-col items-center justify-center rounded-2xl border border-border bg-card py-20 text-center"
-              >
-                <FolderOpen className="mb-4 h-10 w-10 text-foreground-secondary/50" />
-                <h3 className="mb-1 text-lg font-semibold text-foreground">
-                  No projects found
-                </h3>
-                <p className="mb-6 max-w-sm text-sm text-foreground-secondary">
-                  {debouncedSearch
-                    ? `No projects matching "${debouncedSearch}". Try a different search term.`
-                    : "No projects yet. Create your first project to get started!"}
-                </p>
-                <Link href="/projects/new">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    icon={<Plus className="h-4 w-4" />}
-                  >
-                    New Project
-                  </Button>
-                </Link>
+              <motion.div key="empty" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} className="workspace-empty-state">
+                <FolderOpen aria-hidden="true" />
+                <h2>{debouncedSearch ? "No matching projects" : "No projects in this stage"}</h2>
+                <p>{debouncedSearch ? `Nothing matched “${debouncedSearch}”. Try a broader project name or clear the search.` : activeFilter === "ALL" ? "Create a project to begin a guided briefing and build a reviewable documentation package." : "Try another lifecycle filter, or open a project to continue its current review step."}</p>
+                {!debouncedSearch && activeFilter === "ALL" && <Link href="/projects/new"><Button size="sm" icon={<Plus className="h-4 w-4" />}>Create project</Button></Link>}
               </motion.div>
             ) : (
               <StaggerContainer
@@ -360,6 +306,7 @@ export default function ProjectsPage() {
             </div>
           </FadeIn>
         )}
+        </div>
       </section>
     </PageTransition>
   );
@@ -370,25 +317,18 @@ export default function ProjectsPage() {
 /* ------------------------------------------------------------------ */
 
 function ProjectCard({ project }: { project: ProjectResponse }) {
-  const statusCfg = STATUS_CONFIG[project.status];
-
   return (
     <Link href={`/projects/${project.id}`}>
       <Card hover className="group relative h-full cursor-pointer">
         <div className="mb-4 flex items-center justify-between">
-          <span className="inline-flex items-center gap-1.5 rounded-lg bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+          <span className="sf-meta inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent-light px-2.5 py-1 text-accent">
             {TYPE_ICON[project.type] ?? <Briefcase className="h-3.5 w-3.5" />}
             {TYPE_LABEL[project.type] ?? project.type}
           </span>
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium ${statusCfg.color} ${statusCfg.bg}`}
-          >
-            {statusCfg.icon}
-            {statusCfg.label}
-          </span>
+          <StatusBadge status={project.status} />
         </div>
 
-        <h3 className="mb-1 text-lg font-semibold text-foreground group-hover:text-primary transition-colors">
+        <h3 className="mb-1 text-lg font-semibold text-foreground group-hover:text-accent transition-colors">
           {project.name}
         </h3>
 
@@ -396,24 +336,9 @@ function ProjectCard({ project }: { project: ProjectResponse }) {
           {project.description}
         </p>
 
-        {project.status === "GENERATING" && (
-          <div className="mb-4">
-            <div className="mb-1 flex items-center justify-between text-xs">
-              <span className="text-foreground-secondary">Generating docs…</span>
-              <span className="font-medium text-info">{project.progress}%</span>
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-background-secondary">
-              <motion.div
-                className="h-full rounded-full bg-info"
-                initial={{ width: 0 }}
-                animate={{ width: `${project.progress}%` }}
-                transition={{ duration: 1, ease: "easeOut" }}
-              />
-            </div>
-          </div>
-        )}
+        <SignalMeter className="mb-4" value={project.progress} label="Readiness" />
 
-        <div className="flex items-center justify-between border-t border-border pt-3 text-xs text-foreground-secondary">
+        <div className="sf-meta flex items-center justify-between border-t border-border pt-3 text-foreground-secondary">
           <span className="inline-flex items-center gap-1.5">
             <FileText className="h-3.5 w-3.5" />
             {project.documentCount}{" "}
@@ -426,7 +351,7 @@ function ProjectCard({ project }: { project: ProjectResponse }) {
         </div>
 
         <div className="absolute right-4 top-1/2 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100">
-          <ChevronRight className="h-5 w-5 text-primary" />
+          <ChevronRight className="h-5 w-5 text-accent" />
         </div>
       </Card>
     </Link>
@@ -438,43 +363,26 @@ function ProjectCard({ project }: { project: ProjectResponse }) {
 /* ------------------------------------------------------------------ */
 
 function ProjectListRow({ project }: { project: ProjectResponse }) {
-  const statusCfg = STATUS_CONFIG[project.status];
-
   return (
     <Link href={`/projects/${project.id}`}>
       <Card hover className="group cursor-pointer">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-4 min-w-0">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-accent/25 bg-accent-light text-accent">
               {TYPE_ICON[project.type] ?? <Briefcase className="h-5 w-5" />}
             </div>
             <div className="min-w-0">
-              <h3 className="truncate text-sm font-semibold text-foreground group-hover:text-primary transition-colors">
+              <h3 className="truncate text-sm font-semibold text-foreground group-hover:text-accent transition-colors">
                 {project.name}
               </h3>
-              <p className="truncate text-xs text-foreground-secondary">
+              <p className="sf-meta truncate text-foreground-secondary">
                 {TYPE_LABEL[project.type] ?? project.type}
               </p>
             </div>
           </div>
 
-          {project.status === "GENERATING" && (
-            <div className="hidden w-32 md:block">
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-background-secondary">
-                <motion.div
-                  className="h-full rounded-full bg-info"
-                  initial={{ width: 0 }}
-                  animate={{ width: `${project.progress}%` }}
-                  transition={{ duration: 1, ease: "easeOut" }}
-                />
-              </div>
-              <p className="mt-0.5 text-[10px] text-info font-medium text-center">
-                {project.progress}%
-              </p>
-            </div>
-          )}
-
-          <div className="flex items-center gap-4 text-xs text-foreground-secondary">
+          <div className="sf-meta flex items-center gap-4 text-foreground-secondary">
+            <SignalMeter className="hidden w-28 md:grid" value={project.progress} label="Readiness" />
             <span className="inline-flex items-center gap-1.5">
               <FileText className="h-3.5 w-3.5" />
               {project.documentCount}
@@ -483,12 +391,7 @@ function ProjectListRow({ project }: { project: ProjectResponse }) {
               <Clock className="h-3.5 w-3.5" />
               {formatRelativeTime(project.updatedAt)}
             </span>
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium ${statusCfg.color} ${statusCfg.bg}`}
-            >
-              {statusCfg.icon}
-              {statusCfg.label}
-            </span>
+            <StatusBadge status={project.status} />
             <ChevronRight className="h-4 w-4 text-foreground-secondary opacity-0 transition-opacity group-hover:opacity-100" />
           </div>
         </div>
