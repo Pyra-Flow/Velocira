@@ -1,11 +1,10 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Zap,
   Menu,
   X,
   Sun,
@@ -22,16 +21,20 @@ import { useTheme } from "@/providers/ThemeProvider";
 import { useAuthStore } from "@/store/authStore";
 import { cn } from "@/lib/utils";
 import Button from "@/components/ui/Button";
+import VelociraLogo from "@/components/branding/VelociraLogo";
 
 export default function Navbar() {
   const { t } = useLocale();
   const { theme, toggleTheme } = useTheme();
-  const { isAuthenticated, user, logout } = useAuthStore();
+  const { isAuthenticated, user } = useAuthStore();
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const profileRef = useRef<HTMLDivElement | null>(null);
+  const profileTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const mobilePanelRef = useRef<HTMLDivElement | null>(null);
+  const lastMobileFocusRef = useRef<HTMLElement | null>(null);
 
   /* ── scroll detection ─────────────────────────────────── */
   useEffect(() => {
@@ -40,23 +43,42 @@ export default function Navbar() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  /* ── close mobile menu on route change ────────────────── */
   useEffect(() => {
-    setMobileOpen(false);
-    setProfileOpen(false);
-  }, [pathname]);
+    if (!mobileOpen) return;
+    lastMobileFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const frame = window.requestAnimationFrame(() => {
+      mobilePanelRef.current?.querySelector<HTMLElement>("a[href], button:not([disabled])")?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      lastMobileFocusRef.current?.focus();
+    };
+  }, [mobileOpen]);
 
   /* ── outside-click handler for profile dropdown ───────── */
   useEffect(() => {
+    if (!profileOpen) return;
     const onOutsideClick = (event: MouseEvent) => {
       if (!profileRef.current) return;
       if (!profileRef.current.contains(event.target as Node)) {
         setProfileOpen(false);
       }
     };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setProfileOpen(false);
+      window.requestAnimationFrame(() => profileTriggerRef.current?.focus());
+    };
     document.addEventListener("mousedown", onOutsideClick);
-    return () => document.removeEventListener("mousedown", onOutsideClick);
-  }, []);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onOutsideClick);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [profileOpen]);
 
   /* ── nav links ────────────────────────────────────────── */
   const navLinks = isAuthenticated
@@ -76,11 +98,34 @@ export default function Navbar() {
     href === "/" ? pathname === "/" : pathname.startsWith(href);
 
   const iconButtonClass =
-    "flex h-10 w-10 items-center justify-center rounded-xl border border-border/50 bg-background/30 text-foreground-secondary transition-all duration-200 hover:border-border-hover hover:text-foreground hover:bg-card hover:shadow-sm";
+    "flex h-9 w-9 items-center justify-center rounded-md border border-border bg-transparent text-foreground-secondary transition-colors duration-150 hover:border-accent hover:bg-accent-light hover:text-accent";
 
   const closeMenus = () => {
     setMobileOpen(false);
     setProfileOpen(false);
+  };
+
+  const handleMobileMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setMobileOpen(false);
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const panel = mobilePanelRef.current;
+    if (!panel) return;
+    const focusable = Array.from(panel.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), [tabindex]:not([tabindex='-1'])"));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) return;
+    if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   };
 
   /* ── profile dropdown items ───────────────────────────── */
@@ -98,15 +143,15 @@ export default function Navbar() {
       initial={{ y: -90 }}
       animate={{ y: 0 }}
       transition={{ type: "spring", stiffness: 110, damping: 18 }}
-      className="fixed inset-x-0 top-0 z-50"
+      className="fixed inset-x-0 top-0 z-50 border-b border-nav-border bg-utility"
     >
-      <div className="mx-auto max-w-7xl px-4 py-3 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div
           className={cn(
-            "glass relative rounded-2xl border overflow-visible transition-all duration-500",
+            "relative overflow-visible transition-colors duration-150",
             scrolled
-              ? "border-nav-border shadow-lg shadow-black/[0.04] backdrop-blur-xl"
-              : "border-nav-border/50 backdrop-blur-md"
+              ? "border-nav-border"
+              : "border-transparent"
           )}
         >
           <div className="relative flex h-16 items-center justify-between px-3 sm:px-4">
@@ -116,14 +161,9 @@ export default function Navbar() {
               onClick={closeMenus}
               className="group flex items-center gap-3"
             >
-              <motion.div
-                whileHover={{ rotate: 8, scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                transition={{ duration: 0.25 }}
-                className="relative flex h-10 w-10 items-center justify-center rounded-xl border border-primary/25 bg-primary/10"
-              >
-                <Zap className="h-5 w-5 text-primary transition-transform group-hover:scale-110" />
-              </motion.div>
+              <span className="relative flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background-secondary">
+                <VelociraLogo size={29} priority />
+              </span>
               <div className="flex items-center gap-2.5">
                 <div>
                   <span className="block text-lg font-bold font-display tracking-wide text-foreground">
@@ -137,16 +177,17 @@ export default function Navbar() {
             </Link>
 
             {/* ── Desktop center nav ────────────────────── */}
-            <div className="absolute left-1/2 hidden -translate-x-1/2 md:flex items-center rounded-xl border border-border/50 bg-background/35 p-1 gap-0.5">
+            <div className="absolute left-1/2 hidden -translate-x-1/2 md:flex items-center gap-0.5 border-l border-border-subtle pl-4">
               {navLinks.map((link) => (
                 <Link
                   key={link.href}
                   href={link.href}
                   onClick={closeMenus}
+                  aria-current={isActive(link.href) ? "page" : undefined}
                   className={cn(
                     "relative inline-flex items-center justify-center overflow-hidden rounded-lg px-4 py-2 text-sm font-medium leading-none transition-all duration-200",
                     isActive(link.href)
-                      ? "text-on-primary"
+                      ? "text-accent"
                       : "text-foreground-secondary hover:text-foreground"
                   )}
                 >
@@ -158,7 +199,7 @@ export default function Navbar() {
                         stiffness: 380,
                         damping: 30,
                       }}
-                      className="absolute inset-0 rounded-lg bg-primary"
+                      className="absolute inset-0 rounded-sm border border-accent/35 bg-accent-light"
                     />
                   )}
                   <span className="relative z-10">{link.label}</span>
@@ -174,6 +215,7 @@ export default function Navbar() {
                 onClick={toggleTheme}
                 className={iconButtonClass}
                 title={t("nav.theme")}
+                aria-label={t("nav.theme")}
                 type="button"
               >
                 <AnimatePresence mode="wait" initial={false}>
@@ -197,12 +239,17 @@ export default function Navbar() {
                 /* ── Profile dropdown ──────────────────── */
                 <div ref={profileRef} className="relative">
                   <motion.button
+                    ref={profileTriggerRef}
                     onClick={() => setProfileOpen((prev) => !prev)}
                     whileTap={{ scale: 0.97 }}
                     type="button"
-                    className="group flex items-center gap-2 rounded-xl border border-border/50 bg-background/30 px-2.5 py-1.5 transition-all duration-200 hover:border-border-hover hover:bg-card hover:shadow-sm"
+                    aria-expanded={profileOpen}
+                    aria-haspopup="menu"
+                    aria-controls="navbar-profile-menu"
+                    aria-label="Open account menu"
+                    className="group flex items-center gap-2 rounded-md border border-border bg-transparent px-2.5 py-1.5 transition-colors duration-150 hover:border-accent hover:bg-accent-light"
                   >
-                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-on-primary">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-sm bg-accent text-sm font-bold text-on-primary">
                       {user?.fullName?.trim().charAt(0).toUpperCase() || "U"}
                     </div>
                     <span className="max-w-[120px] truncate text-sm font-medium text-foreground">
@@ -219,11 +266,14 @@ export default function Navbar() {
                   <AnimatePresence>
                     {profileOpen && (
                       <motion.div
+                        id="navbar-profile-menu"
+                        role="menu"
+                        aria-label="Account menu"
                         initial={{ opacity: 0, scale: 0.97, y: -6 }}
                         animate={{ opacity: 1, scale: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.97, y: -6 }}
                         className={cn(
-                          "absolute top-full mt-2 w-56 rounded-xl border border-border bg-card p-1.5 shadow-sm",
+                          "absolute top-full mt-2 w-56 rounded-md border border-border bg-card p-1.5",
                           "right-0"
                         )}
                       >
@@ -232,6 +282,7 @@ export default function Navbar() {
                             key={item.href}
                             href={item.href}
                             onClick={closeMenus}
+                            role="menuitem"
                             className="flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-foreground-secondary transition-colors hover:bg-card-hover hover:text-foreground"
                           >
                             <item.icon className="h-4 w-4" />
@@ -241,17 +292,15 @@ export default function Navbar() {
 
                         <div className="my-1 h-px bg-border" />
 
-                        <button
-                          onClick={() => {
-                            setProfileOpen(false);
-                            logout();
-                          }}
-                          type="button"
+                        <Link
+                          href="/logout"
+                          onClick={closeMenus}
+                          role="menuitem"
                           className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-error transition-colors hover:bg-card-hover"
                         >
                           <LogOut className="h-4 w-4" />
                           {t("nav.logout")}
-                        </button>
+                        </Link>
                       </motion.div>
                     )}
                   </AnimatePresence>
@@ -277,6 +326,8 @@ export default function Navbar() {
               className={cn(iconButtonClass, "md:hidden")}
               type="button"
               aria-label={mobileOpen ? "Close menu" : "Open menu"}
+              aria-expanded={mobileOpen}
+              aria-controls="site-mobile-navigation"
             >
               {mobileOpen ? (
                 <X className="h-5 w-5" />
@@ -298,7 +349,7 @@ export default function Navbar() {
             className="overflow-hidden md:hidden"
           >
             <div className="mx-auto -mt-1 max-w-7xl px-4 sm:px-6 lg:px-8">
-              <div className="glass rounded-2xl border border-nav-border p-3 shadow-sm">
+              <div ref={mobilePanelRef} id="site-mobile-navigation" role="navigation" aria-label="Primary navigation" tabIndex={-1} onKeyDown={handleMobileMenuKeyDown} className="border border-nav-border bg-utility p-3">
                 {/* Nav links */}
                 <div className="space-y-1">
                   {navLinks.map((link) => (
@@ -306,10 +357,11 @@ export default function Navbar() {
                       key={link.href}
                       href={link.href}
                       onClick={closeMenus}
+                      aria-current={isActive(link.href) ? "page" : undefined}
                       className={cn(
                         "block rounded-xl px-4 py-2.5 text-sm font-medium transition-colors",
                         isActive(link.href)
-                          ? "bg-primary text-on-primary"
+                        ? "bg-accent-light text-accent"
                           : "text-foreground-secondary hover:bg-card hover:text-foreground"
                       )}
                     >
@@ -324,10 +376,11 @@ export default function Navbar() {
                       <Link
                         href="/settings"
                         onClick={closeMenus}
+                        aria-current={isActive("/settings") ? "page" : undefined}
                         className={cn(
                           "flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium transition-colors",
                           isActive("/settings")
-                            ? "bg-primary text-on-primary"
+                            ? "bg-accent-light text-accent"
                             : "text-foreground-secondary hover:bg-card hover:text-foreground"
                         )}
                       >
@@ -338,10 +391,11 @@ export default function Navbar() {
                         <Link
                           href="/admin"
                           onClick={closeMenus}
+                          aria-current={isActive("/admin") ? "page" : undefined}
                           className={cn(
                             "flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium transition-colors",
                             isActive("/admin")
-                              ? "bg-primary text-on-primary"
+                            ? "bg-accent-light text-accent"
                               : "text-foreground-secondary hover:bg-card hover:text-foreground"
                           )}
                         >
@@ -373,17 +427,14 @@ export default function Navbar() {
 
                 {/* Auth actions */}
                 {isAuthenticated ? (
-                  <button
-                    onClick={() => {
-                      setMobileOpen(false);
-                      logout();
-                    }}
-                    type="button"
+                  <Link
+                    href="/logout"
+                    onClick={closeMenus}
                     className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-error/35 bg-error/10 px-4 py-2.5 text-sm font-medium text-error transition-colors hover:bg-error/15"
                   >
                     <LogOut className="h-4 w-4" />
                     {t("nav.logout")}
-                  </button>
+                  </Link>
                 ) : (
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <Link href="/login">
