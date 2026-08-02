@@ -6,6 +6,7 @@ import com.velocira.backend.auth.security.JwtAuthenticationFilter;
 import io.swagger.v3.oas.annotations.enums.SecuritySchemeType;
 import io.swagger.v3.oas.annotations.security.SecurityScheme;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -57,6 +58,9 @@ public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint;
     private final JwtAccessDeniedHandler jwtAccessDeniedHandler;
+
+    @Value("${velocira.cors.allowed-origins}")
+    private String allowedOrigins;
 
     /** Public auth endpoints (no authentication required). */
     private static final String[] PUBLIC_AUTH_ENDPOINTS = {
@@ -153,10 +157,13 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOriginPatterns(List.of("http://localhost:*", "https://*.velocira.com"));
+        config.setAllowedOrigins(List.of(allowedOrigins.split(",")).stream()
+                .map(String::trim)
+                .filter(origin -> !origin.isBlank())
+                .toList());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
-        config.setExposedHeaders(List.of("Authorization"));
+        config.setExposedHeaders(List.of("Authorization", "X-Correlation-Id"));
         config.setAllowCredentials(true);
         config.setMaxAge(3600L);
 

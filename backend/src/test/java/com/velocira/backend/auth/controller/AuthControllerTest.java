@@ -18,10 +18,13 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.mock.web.MockHttpServletRequest;
 
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -245,6 +248,27 @@ class AuthControllerTest {
                     .content(objectMapper.writeValueAsString(request)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.success").value(true));
+        }
+    }
+
+    @Nested
+    @DisplayName("Rate limiting")
+    class RateLimiting {
+
+        @Test
+        @DisplayName("Should return 429 after the per-IP request limit is exhausted")
+        void shouldRateLimitRepeatedRequests() {
+            AuthController controller = new AuthController(null, null);
+            ReflectionTestUtils.setField(controller, "rateLimitCapacity", 1);
+            ReflectionTestUtils.setField(controller, "rateLimitRefillTokens", 1);
+            ReflectionTestUtils.setField(controller, "rateLimitRefillMinutes", 60);
+            MockHttpServletRequest request = new MockHttpServletRequest();
+            request.setRemoteAddr("203.0.113.10");
+
+            ReflectionTestUtils.invokeMethod(controller, "consumeRateLimit", request);
+
+            assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(controller, "consumeRateLimit", request))
+                    .isInstanceOf(com.velocira.backend.auth.exceptions.RateLimitExceededException.class);
         }
     }
 }

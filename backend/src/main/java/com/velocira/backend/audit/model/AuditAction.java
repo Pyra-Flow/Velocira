@@ -35,6 +35,9 @@ public enum AuditAction {
     PROJECT_UPDATED,
     PROJECT_DELETED,
     PROJECT_DUPLICATED,
+    PROJECT_ARCHIVED,
+    PROJECT_RESTORED,
+    PROJECT_STATUS_CHANGED,
 
     // ── Document ────────────────────────────────────────────────
     DOCUMENT_CREATED,
@@ -42,6 +45,33 @@ public enum AuditAction {
     DOCUMENT_DELETED,
     DOCUMENT_EXPORTED,
     DOCUMENT_GENERATION_REQUESTED,
+
+    // ── Durable generation jobs ────────────────────────────────
+    GENERATION_JOB_REQUESTED,
+    GENERATION_JOB_CANCELLED,
+    GENERATION_JOB_RETRIED,
+    GENERATION_JOB_COMPLETED,
+    GENERATION_JOB_FAILED,
+
+    // ── Requirements discovery ─────────────────────────────────
+    INTERVIEW_STARTED,
+    INTERVIEW_ANSWER_RECORDED,
+    INTERVIEW_BRIEF_CONFIRMED,
+    INTERVIEW_REOPENED,
+
+    // ── Governed evidence and SRS ─────────────────────────────
+    KNOWLEDGE_SOURCE_UPLOADED,
+    KNOWLEDGE_SOURCE_APPROVED,
+    KNOWLEDGE_SOURCE_REJECTED,
+    KNOWLEDGE_SOURCE_DELETED,
+    SRS_GENERATED,
+    SRS_APPROVED,
+    SRS_CHANGE_REQUESTED,
+
+    // ── Linked documentation package ──────────────────────────
+    DOCUMENTATION_PACKAGE_GENERATED,
+    DOCUMENTATION_PACKAGE_APPROVED,
+    DOCUMENTATION_PACKAGE_EXPORTED,
 
     // ── Admin ───────────────────────────────────────────────────
     ADMIN_USER_SUSPENDED,
