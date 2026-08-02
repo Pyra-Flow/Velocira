@@ -68,4 +68,7 @@ public class ProjectResponse {
 
     @Schema(description = "Last update timestamp")
     private Instant updatedAt;
+
+    @Schema(description = "When the project was archived; null for active projects")
+    private Instant archivedAt;
 }

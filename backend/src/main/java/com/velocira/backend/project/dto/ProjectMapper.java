@@ -39,6 +39,7 @@ public final class ProjectMapper {
                 .ownerName(entity.getOwner() != null ? entity.getOwner().getFullName() : null)
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
+                .archivedAt(entity.getArchivedAt())
                 .build();
     }
 }

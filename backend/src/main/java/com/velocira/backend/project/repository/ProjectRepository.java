@@ -5,12 +5,14 @@ import com.velocira.backend.project.model.ProjectStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
 import java.util.UUID;
+import jakarta.persistence.LockModeType;
 
 /**
  * Spring Data repository for {@link ProjectEntity}.
@@ -23,22 +25,27 @@ public interface ProjectRepository extends JpaRepository<ProjectEntity, UUID> {
 
         Page<ProjectEntity> findByOwnerId(UUID ownerId, Pageable pageable);
 
-        @Query(value = "SELECT p.* FROM projects p WHERE p.owner_id = :ownerId " +
-                        "AND (CAST(:status AS VARCHAR) IS NULL OR p.status = CAST(:status AS VARCHAR)) " +
-                        "AND (CAST(:search AS VARCHAR) IS NULL OR LOWER(p.name) LIKE LOWER(CONCAT('%', CAST(:search AS VARCHAR), '%'))) "
-                        +
-                        "ORDER BY p.created_at DESC", countQuery = "SELECT COUNT(*) FROM projects p WHERE p.owner_id = :ownerId "
-                                        +
-                                        "AND (CAST(:status AS VARCHAR) IS NULL OR p.status = CAST(:status AS VARCHAR)) "
-                                        +
-                                        "AND (CAST(:search AS VARCHAR) IS NULL OR LOWER(p.name) LIKE LOWER(CONCAT('%', CAST(:search AS VARCHAR), '%')))", nativeQuery = true)
-        Page<ProjectEntity> findByOwnerFiltered(
-                        @Param("ownerId") UUID ownerId,
-                        @Param("status") String status,
-                        @Param("search") String search,
-                        Pageable pageable);
+        /**
+         * Explicit query shapes avoid PostgreSQL inferring a nullable search
+         * parameter as bytea inside LOWER(:search). The service selects the
+         * appropriate method for the requested filter combination.
+         */
+        Page<ProjectEntity> findByOwnerIdAndStatusNot(UUID ownerId, ProjectStatus status, Pageable pageable);
+
+        Page<ProjectEntity> findByOwnerIdAndStatusNotAndNameContainingIgnoreCase(
+                        UUID ownerId, ProjectStatus status, String search, Pageable pageable);
+
+        Page<ProjectEntity> findByOwnerIdAndStatus(UUID ownerId, ProjectStatus status, Pageable pageable);
+
+        Page<ProjectEntity> findByOwnerIdAndStatusAndNameContainingIgnoreCase(
+                        UUID ownerId, ProjectStatus status, String search, Pageable pageable);
 
         Optional<ProjectEntity> findByIdAndOwnerId(UUID id, UUID ownerId);
+
+        /** Serializes creation of the single discovery session allowed per project. */
+        @Lock(LockModeType.PESSIMISTIC_WRITE)
+        @Query("SELECT p FROM ProjectEntity p WHERE p.id = :id AND p.owner.id = :ownerId")
+        Optional<ProjectEntity> findByIdAndOwnerIdForUpdate(@Param("id") UUID id, @Param("ownerId") UUID ownerId);
 
         long countByOwnerId(UUID ownerId);
 

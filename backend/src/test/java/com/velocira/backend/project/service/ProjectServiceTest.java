@@ -10,6 +10,7 @@ import com.velocira.backend.project.dto.CreateProjectRequest;
 import com.velocira.backend.project.dto.ProjectResponse;
 import com.velocira.backend.project.dto.UpdateProjectRequest;
 import com.velocira.backend.project.exceptions.ProjectAccessDeniedException;
+import com.velocira.backend.project.exceptions.InvalidProjectStateTransitionException;
 import com.velocira.backend.project.exceptions.ProjectNotFoundException;
 import com.velocira.backend.project.model.ProjectEntity;
 import com.velocira.backend.project.model.ProjectStatus;
@@ -104,13 +105,26 @@ class ProjectServiceTest {
         void shouldReturnPaginatedProjects() {
             Pageable pageable = PageRequest.of(0, 10);
             Page<ProjectEntity> page = new PageImpl<>(List.of(testProject), pageable, 1);
-            when(projectRepository.findByOwnerFiltered(eq(ownerId), isNull(), isNull(), any(Pageable.class)))
+            when(projectRepository.findByOwnerIdAndStatusNot(eq(ownerId), eq(ProjectStatus.ARCHIVED), any(Pageable.class)))
                     .thenReturn(page);
 
             Page<ProjectResponse> result = projectService.listUserProjects(ownerId, null, null, pageable);
 
             assertThat(result.getContent()).hasSize(1);
             assertThat(result.getContent().get(0).getName()).isEqualTo("Test Project");
+        }
+
+        @Test
+        @DisplayName("Should use a typed, case-insensitive name filter when search is provided")
+        void shouldSearchProjectsWithoutNullableQueryParameters() {
+            Pageable pageable = PageRequest.of(0, 10);
+            Page<ProjectEntity> page = new PageImpl<>(List.of(testProject), pageable, 1);
+            when(projectRepository.findByOwnerIdAndStatusAndNameContainingIgnoreCase(
+                    eq(ownerId), eq(ProjectStatus.DRAFT), eq("test"), any(Pageable.class))).thenReturn(page);
+
+            Page<ProjectResponse> result = projectService.listUserProjects(ownerId, ProjectStatus.DRAFT, " test ", pageable);
+
+            assertThat(result.getContent()).hasSize(1);
         }
     }
 
@@ -244,6 +258,63 @@ class ProjectServiceTest {
             assertThatThrownBy(() -> projectService.updateProject(projectId, otherUserId, request))
                     .isInstanceOf(ProjectAccessDeniedException.class);
 
+            verify(projectRepository, never()).save(any());
+        }
+    }
+
+    // ── Lifecycle and archive ───────────────────────────────────
+
+    @Nested
+    @DisplayName("Project Lifecycle")
+    class ProjectLifecycle {
+
+        @Test
+        @DisplayName("Should allow an explicit draft-to-discovery transition")
+        void shouldTransitionFromDraftToDiscovery() {
+            when(projectRepository.findById(projectId)).thenReturn(Optional.of(testProject));
+            when(projectRepository.save(any(ProjectEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+            ProjectResponse result = projectService.transitionProjectStatus(
+                    projectId, ownerId, ProjectStatus.DISCOVERY);
+
+            assertThat(result.getStatus()).isEqualTo(ProjectStatus.DISCOVERY);
+            verify(auditService).record(eq(ownerId), isNull(), any(), contains("DRAFT to DISCOVERY"));
+        }
+
+        @Test
+        @DisplayName("Should reject an invalid lifecycle transition")
+        void shouldRejectInvalidTransition() {
+            when(projectRepository.findById(projectId)).thenReturn(Optional.of(testProject));
+
+            assertThatThrownBy(() -> projectService.transitionProjectStatus(
+                    projectId, ownerId, ProjectStatus.APPROVED))
+                    .isInstanceOf(InvalidProjectStateTransitionException.class);
+            verify(projectRepository, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("Should archive and restore the prior lifecycle state")
+        void shouldArchiveAndRestoreProject() {
+            testProject.setStatus(ProjectStatus.NEEDS_REVIEW);
+            when(projectRepository.findById(projectId)).thenReturn(Optional.of(testProject));
+            when(projectRepository.save(any(ProjectEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+            ProjectResponse archived = projectService.archiveProject(projectId, ownerId);
+            assertThat(archived.getStatus()).isEqualTo(ProjectStatus.ARCHIVED);
+            assertThat(archived.getArchivedAt()).isNotNull();
+
+            ProjectResponse restored = projectService.restoreProject(projectId, ownerId);
+            assertThat(restored.getStatus()).isEqualTo(ProjectStatus.NEEDS_REVIEW);
+            assertThat(restored.getArchivedAt()).isNull();
+        }
+
+        @Test
+        @DisplayName("Should deny an archive attempt by a different user")
+        void shouldDenyArchiveForNonOwner() {
+            when(projectRepository.findById(projectId)).thenReturn(Optional.of(testProject));
+
+            assertThatThrownBy(() -> projectService.archiveProject(projectId, UUID.randomUUID()))
+                    .isInstanceOf(ProjectAccessDeniedException.class);
             verify(projectRepository, never()).save(any());
         }
     }

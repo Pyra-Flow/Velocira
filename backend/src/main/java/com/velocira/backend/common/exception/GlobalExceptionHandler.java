@@ -3,6 +3,7 @@ package com.velocira.backend.common.exception;
 import com.velocira.backend.common.dto.ApiResponse;
 import com.velocira.backend.common.dto.ErrorDetail;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -131,6 +132,15 @@ public class GlobalExceptionHandler {
                 .build();
 
         return ResponseEntity.badRequest().body(error);
+    }
+
+    /** Handles method-level request parameter constraints such as paging bounds. */
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleConstraintViolation(
+            ConstraintViolationException ex, HttpServletRequest request) {
+        log.warn("Invalid request parameter on [{}]: {}", request.getRequestURI(), ex.getMessage());
+        return ResponseEntity.badRequest()
+                .body(ApiResponse.error("One or more request parameters are invalid", HttpStatus.BAD_REQUEST.value()));
     }
 
     // ======================== Security Exceptions ========================
