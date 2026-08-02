@@ -7,6 +7,7 @@ import com.velocira.backend.auth.model.UserEntity;
 import com.velocira.backend.auth.repository.UserRepository;
 import com.velocira.backend.project.dto.*;
 import com.velocira.backend.project.exceptions.ProjectAccessDeniedException;
+import com.velocira.backend.project.exceptions.InvalidProjectStateTransitionException;
 import com.velocira.backend.project.exceptions.ProjectNotFoundException;
 import com.velocira.backend.project.model.ProjectEntity;
 import com.velocira.backend.project.model.ProjectStatus;
@@ -14,11 +15,15 @@ import com.velocira.backend.project.repository.ProjectRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -37,6 +42,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class ProjectService {
 
+    private static final Map<ProjectStatus, Set<ProjectStatus>> ALLOWED_TRANSITIONS = lifecycleTransitions();
+
     private final ProjectRepository projectRepository;
     private final UserRepository userRepository;
     private final AuditService auditService;
@@ -54,11 +61,20 @@ public class ProjectService {
     public Page<ProjectResponse> listUserProjects(UUID ownerId, ProjectStatus status,
             String search, Pageable pageable) {
         log.debug("Listing projects for user [{}] status=[{}] search=[{}]", ownerId, status, search);
-        String statusStr = status != null ? status.name() : null;
-        // Native query has ORDER BY built in; strip Sort to avoid column-name mismatch
-        Pageable unsorted = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
-        return projectRepository.findByOwnerFiltered(ownerId, statusStr, search, unsorted)
-                .map(ProjectMapper::toResponse);
+        String normalizedSearch = search == null || search.isBlank() ? null : search.trim();
+        Page<ProjectEntity> projects;
+        if (status == null) {
+            projects = normalizedSearch == null
+                    ? projectRepository.findByOwnerIdAndStatusNot(ownerId, ProjectStatus.ARCHIVED, pageable)
+                    : projectRepository.findByOwnerIdAndStatusNotAndNameContainingIgnoreCase(
+                            ownerId, ProjectStatus.ARCHIVED, normalizedSearch, pageable);
+        } else {
+            projects = normalizedSearch == null
+                    ? projectRepository.findByOwnerIdAndStatus(ownerId, status, pageable)
+                    : projectRepository.findByOwnerIdAndStatusAndNameContainingIgnoreCase(
+                            ownerId, status, normalizedSearch, pageable);
+        }
+        return projects.map(ProjectMapper::toResponse);
     }
 
     /**
@@ -97,6 +113,73 @@ public class ProjectService {
     }
 
     /**
+     * Moves an active project through an explicit, validated lifecycle transition.
+     * Archiving and restoration have dedicated methods so an archive can preserve
+     * the prior state.
+     */
+    @Transactional
+    public ProjectResponse transitionProjectStatus(UUID projectId, UUID userId, ProjectStatus targetStatus) {
+        ProjectEntity project = findProjectWithOwnershipCheck(projectId, userId);
+        ProjectStatus currentStatus = project.getStatus();
+
+        if (targetStatus == ProjectStatus.ARCHIVED) {
+            return archiveProject(projectId, userId);
+        }
+        if (currentStatus == ProjectStatus.ARCHIVED
+                || !ALLOWED_TRANSITIONS.getOrDefault(currentStatus, Set.of()).contains(targetStatus)) {
+            throw new InvalidProjectStateTransitionException(currentStatus, targetStatus);
+        }
+
+        project.setStatus(targetStatus);
+        if (targetStatus != ProjectStatus.GENERATING) {
+            project.setProgress(0);
+        }
+        project = projectRepository.save(project);
+        auditService.record(userId, null, AuditAction.PROJECT_STATUS_CHANGED,
+                "Changed project status from " + currentStatus + " to " + targetStatus + ": " + project.getName());
+        return ProjectMapper.toResponse(project);
+    }
+
+    /** Soft-archives a project and records the state that should be restored. */
+    @Transactional
+    public ProjectResponse archiveProject(UUID projectId, UUID userId) {
+        ProjectEntity project = findProjectWithOwnershipCheck(projectId, userId);
+        if (project.getStatus() == ProjectStatus.ARCHIVED) {
+            return ProjectMapper.toResponse(project);
+        }
+
+        ProjectStatus previousStatus = project.getStatus();
+        project.setArchivedFromStatus(previousStatus);
+        project.setArchivedAt(Instant.now());
+        project.setStatus(ProjectStatus.ARCHIVED);
+        project = projectRepository.save(project);
+        auditService.record(userId, null, AuditAction.PROJECT_ARCHIVED,
+                "Archived project: " + project.getName());
+        return ProjectMapper.toResponse(project);
+    }
+
+    /** Restores a project to the state it had immediately before it was archived. */
+    @Transactional
+    public ProjectResponse restoreProject(UUID projectId, UUID userId) {
+        ProjectEntity project = findProjectWithOwnershipCheck(projectId, userId);
+        if (project.getStatus() != ProjectStatus.ARCHIVED) {
+            throw new InvalidProjectStateTransitionException(project.getStatus(), project.getStatus());
+        }
+
+        ProjectStatus restoredStatus = project.getArchivedFromStatus() == null
+                || project.getArchivedFromStatus() == ProjectStatus.ARCHIVED
+                        ? ProjectStatus.DRAFT
+                        : project.getArchivedFromStatus();
+        project.setStatus(restoredStatus);
+        project.setArchivedAt(null);
+        project.setArchivedFromStatus(null);
+        project = projectRepository.save(project);
+        auditService.record(userId, null, AuditAction.PROJECT_RESTORED,
+                "Restored project: " + project.getName());
+        return ProjectMapper.toResponse(project);
+    }
+
+    /**
      * Retrieves a project by ID, enforcing ownership.
      *
      * @param projectId the project UUID
@@ -125,6 +208,12 @@ public class ProjectService {
     public ProjectResponse updateProject(UUID projectId, UUID userId, UpdateProjectRequest request) {
         log.info("Updating project [{}] for user [{}]", projectId, userId);
         ProjectEntity project = findProjectWithOwnershipCheck(projectId, userId);
+
+        if (project.getStatus() == ProjectStatus.GENERATING
+                || project.getStatus() == ProjectStatus.APPROVED
+                || project.getStatus() == ProjectStatus.ARCHIVED) {
+            throw new InvalidProjectStateTransitionException(project.getStatus(), project.getStatus());
+        }
 
         if (request.getName() != null) {
             project.setName(request.getName().trim());
@@ -226,5 +315,18 @@ public class ProjectService {
             throw new ProjectAccessDeniedException();
         }
         return project;
+    }
+
+    private static Map<ProjectStatus, Set<ProjectStatus>> lifecycleTransitions() {
+        Map<ProjectStatus, Set<ProjectStatus>> transitions = new EnumMap<>(ProjectStatus.class);
+        transitions.put(ProjectStatus.DRAFT, EnumSet.of(ProjectStatus.DISCOVERY));
+        transitions.put(ProjectStatus.DISCOVERY, EnumSet.of(ProjectStatus.DRAFT, ProjectStatus.READY_FOR_GENERATION));
+        transitions.put(ProjectStatus.READY_FOR_GENERATION, EnumSet.of(ProjectStatus.DISCOVERY, ProjectStatus.GENERATING));
+        transitions.put(ProjectStatus.GENERATING, EnumSet.of(ProjectStatus.NEEDS_REVIEW, ProjectStatus.FAILED));
+        transitions.put(ProjectStatus.NEEDS_REVIEW, EnumSet.of(ProjectStatus.READY_FOR_GENERATION, ProjectStatus.APPROVED));
+        transitions.put(ProjectStatus.APPROVED, EnumSet.of(ProjectStatus.NEEDS_REVIEW));
+        transitions.put(ProjectStatus.FAILED, EnumSet.of(ProjectStatus.DISCOVERY, ProjectStatus.READY_FOR_GENERATION));
+        transitions.put(ProjectStatus.ARCHIVED, EnumSet.noneOf(ProjectStatus.class));
+        return Map.copyOf(transitions);
     }
 }

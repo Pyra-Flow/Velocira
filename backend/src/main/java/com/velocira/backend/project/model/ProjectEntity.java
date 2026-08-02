@@ -7,6 +7,7 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.util.ArrayList;
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -54,7 +55,7 @@ public class ProjectEntity extends BaseEntity {
 
     /** Current lifecycle status. */
     @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false, length = 20)
+    @Column(name = "status", nullable = false, length = 30)
     @Builder.Default
     private ProjectStatus status = ProjectStatus.DRAFT;
 
@@ -78,6 +79,15 @@ public class ProjectEntity extends BaseEntity {
     @Column(name = "progress", nullable = false)
     @Builder.Default
     private int progress = 0;
+
+    /** When the project was soft-archived, or {@code null} while active. */
+    @Column(name = "archived_at")
+    private Instant archivedAt;
+
+    /** The lifecycle state to restore when an archived project is reopened. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "archived_from_status", length = 30)
+    private ProjectStatus archivedFromStatus;
 
     /** Associated generated documents. Cascade delete when project is deleted. */
     @OneToMany(mappedBy = "project", cascade = CascadeType.ALL, orphanRemoval = true)
