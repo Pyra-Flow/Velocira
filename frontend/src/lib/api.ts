@@ -353,12 +353,20 @@ export type InterviewSessionStatus = "IN_PROGRESS" | "READY_FOR_CONFIRMATION" | 
 export type OpenQuestionStatus = "OPEN" | "ACKNOWLEDGED_UNKNOWN" | "RESOLVED";
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
 
+export interface InterviewChoiceOption {
+  key: string;
+  label: string;
+  description: string;
+}
+
 export interface InterviewQuestionResponse {
   questionKey: string;
   category: InterviewCategory;
   questionText: string;
   whyWeAsk: string;
   riskLevel: RiskLevel;
+  allowsMultiple: boolean;
+  options: InterviewChoiceOption[];
 }
 
 export interface InterviewAnswerResponse {
@@ -372,6 +380,10 @@ export interface InterviewAnswerResponse {
   revisionNumber: number;
   current: boolean;
   createdAt: string;
+  allowsMultiple: boolean;
+  options: InterviewChoiceOption[];
+  selectedOptionKeys: string[];
+  customAnswerText?: string | null;
 }
 
 export interface InterviewAssumptionResponse {
@@ -437,6 +449,7 @@ export interface InterviewAnswerRequest {
   questionKey: string;
   disposition: InterviewAnswerDisposition;
   answerText?: string;
+  selectedOptionKeys?: string[];
 }
 
 /* ================================================================== */

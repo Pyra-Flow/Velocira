@@ -24,10 +24,20 @@ public class DiscoveryQuestionCatalog {
             String questionText,
             String whyWeAsk,
             RiskLevel riskLevel,
-            boolean required) {
+            boolean required,
+            boolean allowsMultiple,
+            List<ChoiceOption> options) {
 
         InterviewDtos.QuestionResponse toResponse() {
-            return new InterviewDtos.QuestionResponse(key, category, questionText, whyWeAsk, riskLevel);
+            return new InterviewDtos.QuestionResponse(key, category, questionText, whyWeAsk, riskLevel,
+                    allowsMultiple, options.stream().map(ChoiceOption::toResponse).toList());
+        }
+    }
+
+    /** A bounded, server-owned option that can be safely rendered as a check control. */
+    public record ChoiceOption(String key, String label, String description) {
+        InterviewDtos.ChoiceOptionResponse toResponse() {
+            return new InterviewDtos.ChoiceOptionResponse(key, label, description);
         }
     }
 
@@ -141,7 +151,8 @@ public class DiscoveryQuestionCatalog {
             default -> question.questionText();
         };
         String why = question.whyWeAsk() + " For this project, it also clarifies " + domain.whyFocus() + ".";
-        return new QuestionDefinition(question.key(), question.category(), prompt, why, question.riskLevel(), question.required());
+        return new QuestionDefinition(question.key(), question.category(), prompt, why, question.riskLevel(),
+                question.required(), question.allowsMultiple(), question.options());
     }
 
     private DomainProfile detectDomain(ProjectEntity project) {
@@ -188,6 +199,94 @@ public class DiscoveryQuestionCatalog {
             String whyWeAsk,
             RiskLevel riskLevel,
             boolean required) {
-        return new QuestionDefinition(key, category, questionText, whyWeAsk, riskLevel, required);
+        return new QuestionDefinition(key, category, questionText, whyWeAsk, riskLevel, required,
+                category != InterviewCategory.PROBLEM && category != InterviewCategory.WORKFLOWS,
+                choicesFor(category));
+    }
+
+    private List<ChoiceOption> choicesFor(InterviewCategory category) {
+        return switch (category) {
+            case PROBLEM -> List.of(
+                    option("manual-work", "Reduce manual work", "Replace repetitive, error-prone steps."),
+                    option("visibility", "Improve visibility", "Give people a clearer view of work, status, or data."),
+                    option("service", "Improve customer or user service", "Make a key task easier, faster, or more reliable."),
+                    option("accuracy", "Improve accuracy or compliance", "Reduce mistakes and strengthen controls."));
+            case USERS -> List.of(
+                    option("customers", "Customers or end users", "People receiving the service or product."),
+                    option("employees", "Internal staff", "People who operate the day-to-day process."),
+                    option("managers", "Managers or approvers", "People who monitor, decide, or approve work."),
+                    option("admins", "Administrators", "People who configure access, data, or settings."),
+                    option("partners", "External partners", "Suppliers, vendors, or other outside collaborators."));
+            case STAKEHOLDERS -> List.of(
+                    option("sponsor", "Executive sponsor", "Owns the outcome or funding."),
+                    option("product-owner", "Product owner", "Sets priorities and accepts the delivered work."),
+                    option("operations", "Operations lead", "Owns the process changing in practice."),
+                    option("security", "Security or compliance", "Reviews risk, privacy, or regulatory obligations."),
+                    option("support", "Support or service team", "Handles questions and problems after launch."));
+            case SCOPE -> List.of(
+                    option("records", "Create and manage records", "Capture, update, and organize core information."),
+                    option("dashboard", "Dashboard and status tracking", "Show progress, queues, or operational visibility."),
+                    option("approvals", "Review and approvals", "Route work for checks or decisions."),
+                    option("notifications", "Notifications and reminders", "Keep the right people informed at the right time."),
+                    option("reporting", "Search and reporting", "Find information and understand outcomes."));
+            case EXCLUSIONS -> List.of(
+                    option("native-mobile", "Native mobile apps", "A separate iOS or Android application."),
+                    option("payments", "Payments or billing", "Processing money, subscriptions, or invoices."),
+                    option("migration", "Historic data migration", "Moving and cleaning old data in this release."),
+                    option("integrations", "Complex third-party integrations", "Non-essential external-system connections."),
+                    option("advanced-ai", "Advanced AI automation", "Autonomous or sophisticated AI capabilities."));
+            case WORKFLOWS -> List.of(
+                    option("submit", "Submit a request or item", "A user starts the main process."),
+                    option("review", "Review and approve", "A responsible person checks or decides."),
+                    option("manage", "Manage a record", "A user creates, updates, or closes a core record."),
+                    option("monitor", "Monitor status", "A user views queues, progress, or exceptions."),
+                    option("resolve", "Resolve an issue", "A user handles an exception or completes a follow-up."));
+            case ENTITIES -> List.of(
+                    option("profiles", "People or organization profiles", "Users, customers, teams, or accounts."),
+                    option("requests", "Requests or work items", "Tasks, cases, tickets, or submissions."),
+                    option("transactions", "Transactions or events", "Orders, appointments, actions, or activity records."),
+                    option("documents", "Documents or files", "Attachments, evidence, or generated documents."),
+                    option("settings", "Settings and permissions", "Roles, access rules, configuration, or preferences."));
+            case INTEGRATIONS -> List.of(
+                    option("none", "No integration for the first release", "Keep the first release self-contained."),
+                    option("identity", "Identity or single sign-on", "Use an existing account or login provider."),
+                    option("email", "Email or messaging", "Send notifications or receive updates."),
+                    option("files", "File storage", "Store or retrieve documents and attachments."),
+                    option("business-system", "Existing business system", "Connect to an ERP, CRM, payment, or specialist platform."));
+            case QUALITY_GOALS -> List.of(
+                    option("security", "Security", "Protect accounts, access, and sensitive information."),
+                    option("privacy", "Privacy", "Collect and use personal data responsibly."),
+                    option("speed", "Speed", "Keep key screens and actions responsive."),
+                    option("accessibility", "Accessibility", "Make the experience usable for people with disabilities."),
+                    option("reliability", "Reliability", "Keep the service available and recoverable."));
+            case CONSTRAINTS -> List.of(
+                    option("deadline", "Fixed deadline", "A launch date or delivery milestone cannot move."),
+                    option("budget", "Fixed budget", "Spend or team capacity is limited."),
+                    option("technology", "Required technology", "A specified stack, platform, or hosting environment."),
+                    option("compliance", "Compliance requirement", "A legal, security, or industry obligation."),
+                    option("team", "Limited team capacity", "Available skills or people constrain delivery."));
+            case RISKS -> List.of(
+                    option("adoption", "Low user adoption", "People may not change their current habits."),
+                    option("data", "Data quality or privacy", "Data may be incomplete, inaccurate, or sensitive."),
+                    option("integration", "Integration dependency", "Another system or team could delay the work."),
+                    option("delivery", "Delivery capacity", "Time, budget, or technical complexity could block launch."),
+                    option("security", "Security incident", "Unauthorized access or misuse could harm users."));
+            case BUSINESS_RULES -> List.of(
+                    option("eligibility", "Eligibility checks", "Decide who can start or complete an action."),
+                    option("approval", "Approval rules", "Require the right role to review or decide."),
+                    option("validation", "Validation rules", "Require complete, accurate, or correctly formatted data."),
+                    option("calculation", "Calculations", "Derive totals, scores, prices, or deadlines."),
+                    option("retention", "Retention and access rules", "Define who can see data and how long it remains."));
+            case METRICS -> List.of(
+                    option("adoption", "User adoption", "Active users or completed onboarding."),
+                    option("time", "Time saved", "Less time to complete the key job."),
+                    option("quality", "Quality improvement", "Fewer errors, rework items, or complaints."),
+                    option("conversion", "Completion or conversion", "More people finish the intended journey."),
+                    option("satisfaction", "User satisfaction", "Better feedback, support outcomes, or loyalty."));
+        };
+    }
+
+    private ChoiceOption option(String key, String label, String description) {
+        return new ChoiceOption(key, label, description);
     }
 }

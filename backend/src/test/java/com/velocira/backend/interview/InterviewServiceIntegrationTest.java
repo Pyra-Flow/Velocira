@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -106,6 +107,26 @@ class InterviewServiceIntegrationTest {
 
         assertThat(answered.answers()).first().extracting(InterviewDtos.AnswerResponse::questionText)
                 .asString().contains("healthcare product");
+    }
+
+    @Test
+    void suggestedChoicesAndCustomAnswerAreStoredAsOneAuditableAnswer() {
+        TestProject fixture = createProject("Choice-based interview project");
+        InterviewDtos.SessionResponse first = interviewService.start(fixture.project().getId(), fixture.owner().getId());
+
+        assertThat(first.nextQuestion().allowsMultiple()).isFalse();
+        assertThat(first.nextQuestion().options()).extracting(InterviewDtos.ChoiceOptionResponse::key)
+                .contains("manual-work");
+
+        InterviewDtos.SessionResponse answered = interviewService.submitAnswer(
+                fixture.project().getId(), fixture.owner().getId(),
+                new InterviewDtos.AnswerRequest("problem", InterviewAnswerDisposition.ANSWERED,
+                        "The current handoff takes too long.", List.of("manual-work")));
+
+        InterviewDtos.AnswerResponse answer = answered.answers().getFirst();
+        assertThat(answer.selectedOptionKeys()).containsExactly("manual-work");
+        assertThat(answer.customAnswerText()).isEqualTo("The current handoff takes too long.");
+        assertThat(answer.answerText()).isEqualTo("Reduce manual work; The current handoff takes too long.");
     }
 
     private TestProject createProject(String name) {
