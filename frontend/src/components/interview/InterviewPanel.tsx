@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ArrowRight,
   BrainCircuit,
+  Check,
   CheckCircle2,
   CircleHelp,
   GitPullRequest,
@@ -42,12 +43,15 @@ function questionFromAnswer(answer: InterviewAnswerResponse): InterviewQuestionR
     questionText: answer.questionText,
     whyWeAsk: answer.whyWeAsk,
     riskLevel: "MEDIUM",
+    allowsMultiple: answer.allowsMultiple,
+    options: answer.options,
   };
 }
 
 export default function InterviewPanel({ projectId, onUpdated }: Props) {
   const [session, setSession] = useState<InterviewSessionResponse | null>(null);
   const [answerText, setAnswerText] = useState("");
+  const [selectedOptionKeys, setSelectedOptionKeys] = useState<string[]>([]);
   const [editing, setEditing] = useState<InterviewAnswerResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -91,8 +95,8 @@ export default function InterviewPanel({ projectId, onUpdated }: Props) {
 
   const submit = async (disposition: InterviewAnswerDisposition) => {
     if (!activeQuestion) return;
-    if (disposition === "ANSWERED" && !answerText.trim()) {
-      setError("Write an answer, or choose Unknown or Skip so the gap stays visible.");
+    if (disposition === "ANSWERED" && !answerText.trim() && selectedOptionKeys.length === 0) {
+      setError("Choose an answer or add your own details. You can also choose Unknown or Skip so the gap stays visible.");
       return;
     }
     setSubmitting(true);
@@ -100,7 +104,8 @@ export default function InterviewPanel({ projectId, onUpdated }: Props) {
     const payload = {
       questionKey: activeQuestion.questionKey,
       disposition,
-      answerText: disposition === "ANSWERED" ? answerText.trim() : undefined,
+      answerText: disposition === "ANSWERED" && answerText.trim() ? answerText.trim() : undefined,
+      selectedOptionKeys: disposition === "ANSWERED" ? selectedOptionKeys : undefined,
     };
     const response = editing
       ? await interviewApi.reviseAnswer(projectId, editing.id, payload)
@@ -108,6 +113,7 @@ export default function InterviewPanel({ projectId, onUpdated }: Props) {
     if (response.success && response.data) {
       applySession(response.data);
       setAnswerText("");
+      setSelectedOptionKeys([]);
       setEditing(null);
     } else {
       setError(response.message || "The answer could not be saved.");
@@ -117,8 +123,19 @@ export default function InterviewPanel({ projectId, onUpdated }: Props) {
 
   const editAnswer = (answer: InterviewAnswerResponse) => {
     setEditing(answer);
-    setAnswerText(answer.answerText ?? "");
+    setAnswerText(answer.customAnswerText ?? answer.answerText ?? "");
+    setSelectedOptionKeys(answer.selectedOptionKeys ?? []);
     setError(null);
+  };
+
+  const updateSelectedOptions = (optionKey: string) => {
+    if (!activeQuestion) return;
+    setSelectedOptionKeys((current) => {
+      if (!activeQuestion.allowsMultiple) return current.includes(optionKey) ? [] : [optionKey];
+      return current.includes(optionKey)
+        ? current.filter((key) => key !== optionKey)
+        : [...current, optionKey];
+    });
   };
 
   const reopen = async () => {
@@ -128,6 +145,7 @@ export default function InterviewPanel({ projectId, onUpdated }: Props) {
       applySession(response.data);
       setEditing(null);
       setAnswerText("");
+      setSelectedOptionKeys([]);
     } else {
       setError(response.message || "The brief could not be reopened.");
     }
@@ -173,7 +191,7 @@ export default function InterviewPanel({ projectId, onUpdated }: Props) {
                     <p className="sf-meta font-semibold uppercase tracking-[0.16em] text-accent">{label(activeQuestion.category)} · {activeQuestion.riskLevel.toLowerCase()} impact</p>
                     <h3 className="mt-2 max-w-3xl text-xl font-semibold leading-snug text-foreground">{activeQuestion.questionText}</h3>
                   </div>
-                  {editing && <Button variant="ghost" size="sm" onClick={() => { setEditing(null); setAnswerText(""); }} disabled={submitting}>Cancel</Button>}
+                  {editing && <Button variant="ghost" size="sm" onClick={() => { setEditing(null); setAnswerText(""); setSelectedOptionKeys([]); }} disabled={submitting}>Cancel</Button>}
                 </div>
               </div>
               <div className="space-y-4 p-5 sm:p-6">
@@ -181,17 +199,49 @@ export default function InterviewPanel({ projectId, onUpdated }: Props) {
                   <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
                   <p><span className="font-semibold text-foreground">Why this matters:</span> {activeQuestion.whyWeAsk}</p>
                 </div>
-                <textarea
-                  rows={6}
-                  value={answerText}
-                  onChange={(event) => setAnswerText(event.target.value)}
-                  placeholder="Write what you know in your own words. We will keep unknowns visible instead of filling gaps with guesses."
-                  className="w-full resize-y rounded-md border border-input-border bg-input-bg px-4 py-3 text-foreground placeholder:text-placeholder focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20"
-                  disabled={submitting}
-                  autoFocus
-                />
+                {activeQuestion.options.length > 0 && (
+                  <fieldset disabled={submitting}>
+                    <legend className="text-sm font-semibold text-foreground">Suggested answers</legend>
+                    <p className="mt-1 text-xs text-foreground-secondary">{activeQuestion.allowsMultiple ? "Choose all that apply, then add details if useful." : "Choose the closest fit, then add details if useful."}</p>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      {activeQuestion.options.map((option) => {
+                        const selected = selectedOptionKeys.includes(option.key);
+                        return (
+                          <label
+                            key={option.key}
+                            className={`flex min-h-20 cursor-pointer gap-3 rounded-md border p-3 transition-colors focus-within:ring-2 focus-within:ring-accent/30 ${selected ? "border-accent bg-accent-light/50" : "border-border bg-card hover:border-accent/50 hover:bg-card-hover"}`}
+                          >
+                            <input
+                              className="sr-only"
+                              type={activeQuestion.allowsMultiple ? "checkbox" : "radio"}
+                              name={`interview-choice-${activeQuestion.questionKey}`}
+                              checked={selected}
+                              onChange={() => updateSelectedOptions(option.key)}
+                              disabled={submitting}
+                            />
+                            <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center border ${activeQuestion.allowsMultiple ? "rounded" : "rounded-full"} ${selected ? "border-accent bg-accent text-on-primary" : "border-input-border bg-input-bg text-transparent"}`} aria-hidden="true">
+                              <Check className="h-3.5 w-3.5" strokeWidth={3} />
+                            </span>
+                            <span><span className="block text-sm font-medium text-foreground">{option.label}</span><span className="mt-0.5 block text-xs leading-5 text-foreground-secondary">{option.description}</span></span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </fieldset>
+                )}
+                <label className="block">
+                  <span className="text-sm font-semibold text-foreground">Add your own answer <span className="font-normal text-foreground-secondary">(optional)</span></span>
+                  <textarea
+                    rows={4}
+                    value={answerText}
+                    onChange={(event) => setAnswerText(event.target.value)}
+                    placeholder="Add context, a missing option, or a completely custom answer in your own words."
+                    className="mt-2 w-full resize-y rounded-md border border-input-border bg-input-bg px-4 py-3 text-foreground placeholder:text-placeholder focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20"
+                    disabled={submitting}
+                  />
+                </label>
                 <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-xs text-foreground-secondary">Answer in plain language—specific details beat polished wording.</p>
+                  <p className="text-xs text-foreground-secondary">Your selected choices and custom details are saved together.</p>
                   <div className="flex flex-wrap gap-2">
                     <Button variant="ghost" size="sm" onClick={() => void submit("SKIPPED")} disabled={submitting}>Skip</Button>
                     <Button variant="outline" size="sm" onClick={() => void submit("UNKNOWN")} disabled={submitting}>I don&apos;t know</Button>

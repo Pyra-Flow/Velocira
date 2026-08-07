@@ -23,7 +23,23 @@ public final class InterviewDtos {
     public record AnswerRequest(
             @NotBlank @Size(max = 120) String questionKey,
             @NotNull InterviewAnswerDisposition disposition,
-            @Size(max = 12_000) String answerText) {
+            @Size(max = 12_000) String answerText,
+            @Size(max = 12) List<@NotBlank @Size(max = 120) String> selectedOptionKeys) {
+
+        /** Preserves the original API shape for existing API clients and tests. */
+        public AnswerRequest(String questionKey, InterviewAnswerDisposition disposition, String answerText) {
+            this(questionKey, disposition, answerText, List.of());
+        }
+
+        public AnswerRequest {
+            selectedOptionKeys = selectedOptionKeys == null ? List.of() : List.copyOf(selectedOptionKeys);
+        }
+    }
+
+    public record ChoiceOptionResponse(
+            String key,
+            String label,
+            String description) {
     }
 
     public record QuestionResponse(
@@ -31,7 +47,9 @@ public final class InterviewDtos {
             InterviewCategory category,
             String questionText,
             String whyWeAsk,
-            RiskLevel riskLevel) {
+            RiskLevel riskLevel,
+            boolean allowsMultiple,
+            List<ChoiceOptionResponse> options) {
     }
 
     public record AnswerResponse(
@@ -44,7 +62,11 @@ public final class InterviewDtos {
             String answerText,
             int revisionNumber,
             boolean current,
-            Instant createdAt) {
+            Instant createdAt,
+            boolean allowsMultiple,
+            List<ChoiceOptionResponse> options,
+            List<String> selectedOptionKeys,
+            String customAnswerText) {
     }
 
     public record AssumptionResponse(

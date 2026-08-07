@@ -35,9 +35,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -112,7 +114,7 @@ public class InterviewService {
         ensureInterviewAllowed(project);
         DiscoveryQuestionCatalog.QuestionDefinition question = questionCatalog.tailorForProject(
                 questionCatalog.requireByKey(request.questionKey().trim()), project);
-        validateAnswer(request);
+        validateAnswer(question, request);
         reopenForEdit(session, project);
 
         InterviewAnswerEntity existing = answerRepository
@@ -130,11 +132,11 @@ public class InterviewService {
                 .questionText(question.questionText())
                 .whyWeAsk(question.whyWeAsk())
                 .disposition(request.disposition())
-                .answerText(normalizeAnswer(request))
+                .answerText(normalizeAnswer(question, request))
                 .revisionNumber(revision)
                 .current(true)
                 .source("USER")
-                .evidence(answerEvidence(request))
+                .evidence(answerEvidence(question, request))
                 .build();
         answer = answerRepository.save(answer);
         refreshDerivedEvidence(session, answer);
@@ -330,9 +332,12 @@ public class InterviewService {
     }
 
     private InterviewDtos.AnswerResponse toAnswerResponse(InterviewAnswerEntity answer) {
+        DiscoveryQuestionCatalog.QuestionDefinition question = questionCatalog.requireByKey(answer.getQuestionKey());
         return new InterviewDtos.AnswerResponse(answer.getId(), answer.getQuestionKey(), answer.getCategory(),
                 answer.getQuestionText(), answer.getWhyWeAsk(), answer.getDisposition(), answer.getAnswerText(),
-                answer.getRevisionNumber(), answer.isCurrent(), answer.getCreatedAt());
+                answer.getRevisionNumber(), answer.isCurrent(), answer.getCreatedAt(), question.allowsMultiple(),
+                question.options().stream().map(DiscoveryQuestionCatalog.ChoiceOption::toResponse).toList(),
+                selectedOptionKeys(answer), customAnswerText(answer));
     }
 
     private InterviewDtos.AssumptionResponse toAssumptionResponse(AssumptionEntity assumption) {
@@ -391,23 +396,94 @@ public class InterviewService {
         session.setStatus(InterviewSessionStatus.IN_PROGRESS);
     }
 
-    private void validateAnswer(InterviewDtos.AnswerRequest request) {
-        if (request.disposition() == InterviewAnswerDisposition.ANSWERED
-                && (request.answerText() == null || request.answerText().isBlank())) {
-            throw new InterviewStateException("Write an answer, or choose Unknown or Skip so the gap remains visible.");
+    private void validateAnswer(
+            DiscoveryQuestionCatalog.QuestionDefinition question,
+            InterviewDtos.AnswerRequest request) {
+        List<String> selectedOptionKeys = request.selectedOptionKeys();
+        boolean hasCustomAnswer = request.answerText() != null && !request.answerText().isBlank();
+        if (request.disposition() != InterviewAnswerDisposition.ANSWERED) {
+            if (!selectedOptionKeys.isEmpty()) {
+                throw new InterviewStateException("Only answered questions can include selected choices.");
+            }
+            return;
+        }
+        if (!hasCustomAnswer && selectedOptionKeys.isEmpty()) {
+            throw new InterviewStateException("Choose an answer or add a custom response. You can also choose Unknown or Skip so the gap remains visible.");
+        }
+        if (!question.allowsMultiple() && selectedOptionKeys.size() > 1) {
+            throw new InterviewStateException("This question accepts one suggested choice. Add details in the custom response if needed.");
+        }
+        if (selectedOptionKeys.stream().distinct().count() != selectedOptionKeys.size()) {
+            throw new InterviewStateException("Each suggested choice can only be selected once.");
+        }
+        Set<String> supportedOptionKeys = question.options().stream()
+                .map(DiscoveryQuestionCatalog.ChoiceOption::key)
+                .collect(Collectors.toSet());
+        if (!supportedOptionKeys.containsAll(selectedOptionKeys)) {
+            throw new InterviewStateException("One or more selected choices do not belong to this question.");
         }
     }
 
-    private String normalizeAnswer(InterviewDtos.AnswerRequest request) {
-        return request.disposition() == InterviewAnswerDisposition.ANSWERED ? request.answerText().trim() : null;
+    private String normalizeAnswer(
+            DiscoveryQuestionCatalog.QuestionDefinition question,
+            InterviewDtos.AnswerRequest request) {
+        if (request.disposition() != InterviewAnswerDisposition.ANSWERED) {
+            return null;
+        }
+        Map<String, String> labelsByKey = question.options().stream()
+                .collect(Collectors.toMap(DiscoveryQuestionCatalog.ChoiceOption::key,
+                        DiscoveryQuestionCatalog.ChoiceOption::label));
+        List<String> parts = new ArrayList<>(request.selectedOptionKeys().stream()
+                .map(labelsByKey::get)
+                .toList());
+        if (request.answerText() != null && !request.answerText().isBlank()) {
+            parts.add(request.answerText().trim());
+        }
+        return String.join("; ", parts);
     }
 
-    private JsonNode answerEvidence(InterviewDtos.AnswerRequest request) {
+    private JsonNode answerEvidence(
+            DiscoveryQuestionCatalog.QuestionDefinition question,
+            InterviewDtos.AnswerRequest request) {
         ObjectNode evidence = objectMapper.createObjectNode();
         evidence.put("source", "user_interview");
         evidence.put("disposition", request.disposition().name());
         evidence.put("recordedAt", Instant.now().toString());
+        var selectedOptionKeys = evidence.putArray("selectedOptionKeys");
+        request.selectedOptionKeys().forEach(selectedOptionKeys::add);
+        if (request.disposition() == InterviewAnswerDisposition.ANSWERED
+                && request.answerText() != null && !request.answerText().isBlank()) {
+            evidence.put("customAnswerText", request.answerText().trim());
+        }
+        var selectedOptions = evidence.putArray("selectedOptions");
+        question.options().stream()
+                .filter(option -> request.selectedOptionKeys().contains(option.key()))
+                .forEach(option -> selectedOptions.addObject()
+                        .put("key", option.key())
+                        .put("label", option.label()));
         return evidence;
+    }
+
+    private List<String> selectedOptionKeys(InterviewAnswerEntity answer) {
+        JsonNode selectedOptionKeys = answer.getEvidence().path("selectedOptionKeys");
+        if (!selectedOptionKeys.isArray()) {
+            return List.of();
+        }
+        List<String> keys = new ArrayList<>();
+        selectedOptionKeys.forEach(option -> {
+            if (option.isTextual() && !option.asText().isBlank()) {
+                keys.add(option.asText());
+            }
+        });
+        return List.copyOf(keys);
+    }
+
+    private String customAnswerText(InterviewAnswerEntity answer) {
+        String customAnswer = answer.getEvidence().path("customAnswerText").asText("");
+        if (!customAnswer.isBlank()) {
+            return customAnswer;
+        }
+        return selectedOptionKeys(answer).isEmpty() ? answer.getAnswerText() : null;
     }
 
     private String display(InterviewCategory category) {
