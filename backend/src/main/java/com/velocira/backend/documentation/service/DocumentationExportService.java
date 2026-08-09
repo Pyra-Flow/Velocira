@@ -34,19 +34,41 @@ public class DocumentationExportService {
 
     @Transactional
     public DocumentationDtos.ExportResponse create(UUID projectId, UUID packageId, UUID ownerId, DocumentationExportFormat format) {
+        return create(projectId, packageId, ownerId, format, DocumentationExportStyle.defaults());
+    }
+
+    /** Accepts the API-level style fields while retaining the legacy format-only overload above. */
+    @Transactional
+    public DocumentationDtos.ExportResponse create(UUID projectId, UUID packageId, UUID ownerId, DocumentationExportFormat format,
+                                                    DocumentationExportTemplate template, DocumentationExportTheme theme,
+                                                    DocumentationExportLayout layout) {
+        return create(projectId, packageId, ownerId, format, new DocumentationExportStyle(template, theme, layout));
+    }
+
+    @Transactional
+    public DocumentationDtos.ExportResponse create(UUID projectId, UUID packageId, UUID ownerId, DocumentationExportFormat format,
+                                                    DocumentationExportStyle requestedStyle) {
         DocumentationPackageEntity documentationPackage = requiredPackage(projectId, packageId, ownerId);
         if (documentationPackage.getStatus() != DocumentationPackageStatus.APPROVED) {
             throw new DocumentationPackageException("Approve the documentation package before exporting it.", HttpStatus.CONFLICT);
         }
+        DocumentationExportStyle style = requestedStyle == null ? DocumentationExportStyle.defaults() : requestedStyle;
+        if (!style.isSupportedBy(format)) {
+            throw new DocumentationPackageException("Template, theme, and layout are available only for ZIP, PDF, and DOCX exports.",
+                    HttpStatus.BAD_REQUEST);
+        }
         DocumentationExportRenderer.RenderedExport rendered = renderer.render(format, documentationPackage,
-                artifactRepository.findByDocumentationPackageIdOrderByArtifactTypeAsc(packageId));
+                artifactRepository.findByDocumentationPackageIdOrderByArtifactTypeAsc(packageId), style);
+        boolean styledDocument = format.supportsDocumentStyling();
         DocumentationExportJobEntity job = exportRepository.save(DocumentationExportJobEntity.builder()
                 .documentationPackage(documentationPackage).owner(documentationPackage.getOwner()).format(format)
+                .template(styledDocument ? style.template() : null).theme(styledDocument ? style.theme() : null).layout(styledDocument ? style.layout() : null)
                 .status(DocumentationExportStatus.READY).filename(rendered.filename()).contentType(rendered.contentType())
                 .byteSize(rendered.content().length).contentSha256(GenerationHashing.sha256(rendered.content()))
                 .content(rendered.content()).completedAt(Instant.now()).build());
         auditService.record(ownerId, documentationPackage.getOwner().getEmail(), AuditAction.DOCUMENTATION_PACKAGE_EXPORTED,
-                "Exported linked documentation package v" + documentationPackage.getVersionNumber() + " as " + format + ".");
+                "Exported linked documentation package v" + documentationPackage.getVersionNumber() + " as " + format
+                        + (styledDocument ? " using " + style.template() + "/" + style.theme() + "/" + style.layout() : " as a faithful source artifact") + ".");
         return response(job);
     }
 
@@ -66,8 +88,11 @@ public class DocumentationExportService {
                 .orElseThrow(() -> new DocumentationPackageException("Documentation package not found.", HttpStatus.NOT_FOUND));
     }
     private DocumentationDtos.ExportResponse response(DocumentationExportJobEntity job) {
-        return new DocumentationDtos.ExportResponse(job.getId(), job.getFormat().name(), job.getStatus().name(), job.getFilename(),
+        return new DocumentationDtos.ExportResponse(job.getId(), job.getFormat().name(), enumName(job.getTemplate()), enumName(job.getTheme()),
+                enumName(job.getLayout()), job.getStatus().name(), job.getFilename(),
                 job.getContentType(), job.getByteSize(), job.getContentSha256(), job.getCompletedAt(), job.getCreatedAt());
     }
+
+    private String enumName(Enum<?> value) { return value == null ? null : value.name(); }
     public record Download(String filename, String contentType, byte[] bytes) { }
 }

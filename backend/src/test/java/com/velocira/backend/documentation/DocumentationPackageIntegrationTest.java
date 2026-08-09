@@ -9,6 +9,10 @@ import com.velocira.backend.auth.model.UserEntity;
 import com.velocira.backend.auth.repository.UserRepository;
 import com.velocira.backend.documentation.dto.DocumentationDtos;
 import com.velocira.backend.documentation.model.DocumentationExportFormat;
+import com.velocira.backend.documentation.model.DocumentationExportLayout;
+import com.velocira.backend.documentation.model.DocumentationExportStyle;
+import com.velocira.backend.documentation.model.DocumentationExportTemplate;
+import com.velocira.backend.documentation.model.DocumentationExportTheme;
 import com.velocira.backend.documentation.service.DocumentationExportService;
 import com.velocira.backend.documentation.service.DocumentationPackageService;
 import com.velocira.backend.knowledge.model.SrsRequirementEntity;
@@ -35,6 +39,8 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.UUID;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -101,13 +107,63 @@ class DocumentationPackageIntegrationTest {
         assertThat(yamlContract).isEqualTo(objectMapper.readTree(jsonDownload.bytes()));
     }
 
+    @Test
+    void styledExportsPersistChoicesAndKeepEachTemplateReadable() throws Exception {
+        Fixture fixture = fixture();
+        DocumentationDtos.PackageResponse generated = packageService.generate(fixture.project().getId(), fixture.owner().getId(), fixture.srs().getId());
+        DocumentationExportStyle[] styles = {
+                new DocumentationExportStyle(DocumentationExportTemplate.EXECUTIVE, DocumentationExportTheme.SIGNAL, DocumentationExportLayout.STANDARD),
+                new DocumentationExportStyle(DocumentationExportTemplate.TECHNICAL, DocumentationExportTheme.OCEAN, DocumentationExportLayout.COMPACT),
+                new DocumentationExportStyle(DocumentationExportTemplate.MINIMAL, DocumentationExportTheme.MONOCHROME, DocumentationExportLayout.PRESENTATION)
+        };
+
+        for (DocumentationExportStyle style : styles) {
+            DocumentationDtos.ExportResponse pdf = exportService.create(fixture.project().getId(), generated.id(), fixture.owner().getId(), DocumentationExportFormat.PDF, style);
+            DocumentationDtos.ExportResponse docx = exportService.create(fixture.project().getId(), generated.id(), fixture.owner().getId(), DocumentationExportFormat.DOCX, style);
+
+            assertThat(pdf.template()).isEqualTo(style.template().name());
+            assertThat(pdf.theme()).isEqualTo(style.theme().name());
+            assertThat(pdf.layout()).isEqualTo(style.layout().name());
+            assertThat(docx.template()).isEqualTo(style.template().name());
+
+            byte[] pdfBytes = exportService.download(fixture.project().getId(), generated.id(), pdf.id(), fixture.owner().getId()).bytes();
+            byte[] docxBytes = exportService.download(fixture.project().getId(), generated.id(), docx.id(), fixture.owner().getId()).bytes();
+            writePreviewWhenRequested(style, pdfBytes, docxBytes);
+            try (PDDocument pdfDocument = Loader.loadPDF(pdfBytes);
+                 XWPFDocument docxDocument = new XWPFDocument(new java.io.ByteArrayInputStream(docxBytes))) {
+                assertThat(pdfDocument.getNumberOfPages()).isPositive();
+                assertThat(docxDocument.getParagraphs()).isNotEmpty();
+            }
+        }
+
+        DocumentationExportStyle archiveStyle = new DocumentationExportStyle(DocumentationExportTemplate.TECHNICAL, DocumentationExportTheme.VIOLET, DocumentationExportLayout.COMPACT);
+        DocumentationDtos.ExportResponse archive = exportService.create(fixture.project().getId(), generated.id(), fixture.owner().getId(), DocumentationExportFormat.ZIP, archiveStyle);
+        try (ZipInputStream zip = new ZipInputStream(new java.io.ByteArrayInputStream(exportService.download(fixture.project().getId(), generated.id(), archive.id(), fixture.owner().getId()).bytes()))) {
+            java.util.Map<String, byte[]> entries = new java.util.HashMap<>();
+            java.util.zip.ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) entries.put(entry.getName(), zip.readAllBytes());
+            assertThat(entries.keySet()).contains("documentation-package.docx", "documentation-package.pdf", "diagrams/erd.svg", "diagrams/use-cases.svg");
+            assertThat(new String(entries.get("README.md"), StandardCharsets.UTF_8)).contains("Template: TECHNICAL", "Theme: VIOLET", "Layout: COMPACT");
+        }
+    }
+
+    private void writePreviewWhenRequested(DocumentationExportStyle style, byte[] pdfBytes, byte[] docxBytes) throws Exception {
+        String previewDirectory = System.getProperty("documentation.export.previewDir");
+        if (previewDirectory == null || previewDirectory.isBlank()) return;
+        Path directory = Path.of(previewDirectory);
+        Files.createDirectories(directory);
+        String prefix = style.template().name().toLowerCase();
+        Files.write(directory.resolve(prefix + ".pdf"), pdfBytes);
+        Files.write(directory.resolve(prefix + ".docx"), docxBytes);
+    }
+
     private Fixture fixture() {
         UserEntity owner = userRepository.save(UserEntity.builder().fullName("Package Tester")
                 .email("package-" + UUID.randomUUID() + "@example.test").password("not-used")
                 .role(Role.USER).authProvider(AuthProvider.LOCAL).emailVerified(true).build());
         ProjectEntity project = projectRepository.save(ProjectEntity.builder().owner(owner).name("ClinicFlow")
                 .description("A secure clinic workflow application.").type(ProjectType.WEB_APP).status(ProjectStatus.APPROVED).build());
-        StandardsProfileEntity profile = profileRepository.save(StandardsProfileEntity.builder().profileKey("TESTER")
+        StandardsProfileEntity profile = profileRepository.save(StandardsProfileEntity.builder().profileKey("TESTER-" + UUID.randomUUID())
                 .name("Test controls").description("Test profile").sourceLicense("Internal").ownerName("Test")
                 .effectiveDate(LocalDate.now()).controls(objectMapper.createArrayNode().add("Trace every requirement")).active(true).build());
         ObjectNode brief = objectMapper.createObjectNode();

@@ -22,8 +22,12 @@ import {
   downloadDocumentationExport,
   srsApi,
   type DocumentationArtifactType,
+  type DocumentationExportLayout,
+  type DocumentationExportRequest,
   type DocumentationExportFormat,
   type DocumentationExportResponse,
+  type DocumentationExportTemplate,
+  type DocumentationExportTheme,
   type DocumentationPackageResponse,
   type DocumentationTraceResponse,
   type SrsVersionResponse,
@@ -31,6 +35,36 @@ import {
 
 const exportFormats: Array<{ value: DocumentationExportFormat; label: string }> = [
   { value: "ZIP", label: "Complete ZIP" }, { value: "PDF", label: "PDF" }, { value: "DOCX", label: "Word" }, { value: "MARKDOWN", label: "Markdown" }, { value: "OPENAPI_JSON", label: "OpenAPI JSON" }, { value: "OPENAPI_YAML", label: "OpenAPI YAML" }, { value: "UML_SOURCE", label: "UML source" }, { value: "ERD_SOURCE", label: "ERD source" },
+];
+
+const styledExportFormats = new Set<DocumentationExportFormat>(["ZIP", "PDF", "DOCX"]);
+
+const exportTemplates: Array<{ value: DocumentationExportTemplate; label: string; description: string }> = [
+  { value: "EXECUTIVE", label: "Executive", description: "A polished summary with callouts and clear milestones." },
+  { value: "TECHNICAL", label: "Technical", description: "Architecture-forward detail for implementation teams." },
+  { value: "MINIMAL", label: "Minimal", description: "A restrained, print-friendly reading experience." },
+];
+
+const exportThemes: Array<{
+  value: DocumentationExportTheme;
+  label: string;
+  barClass: string;
+  textClass: string;
+  borderClass: string;
+  surfaceClass: string;
+  softSurfaceClass: string;
+}> = [
+  { value: "SIGNAL", label: "Signal", barClass: "bg-accent", textClass: "text-accent", borderClass: "border-accent/45", surfaceClass: "bg-accent-light", softSurfaceClass: "bg-accent-light/55" },
+  { value: "OCEAN", label: "Ocean", barClass: "bg-sky-500", textClass: "text-sky-700 dark:text-sky-300", borderClass: "border-sky-500/45", surfaceClass: "bg-sky-500/10", softSurfaceClass: "bg-sky-500/5" },
+  { value: "VIOLET", label: "Violet", barClass: "bg-violet-500", textClass: "text-violet-700 dark:text-violet-300", borderClass: "border-violet-500/45", surfaceClass: "bg-violet-500/10", softSurfaceClass: "bg-violet-500/5" },
+  { value: "EMERALD", label: "Emerald", barClass: "bg-emerald-500", textClass: "text-emerald-700 dark:text-emerald-300", borderClass: "border-emerald-500/45", surfaceClass: "bg-emerald-500/10", softSurfaceClass: "bg-emerald-500/5" },
+  { value: "MONOCHROME", label: "Monochrome", barClass: "bg-slate-500", textClass: "text-slate-700 dark:text-slate-200", borderClass: "border-slate-500/45", surfaceClass: "bg-slate-500/10", softSurfaceClass: "bg-slate-500/5" },
+];
+
+const exportLayouts: Array<{ value: DocumentationExportLayout; label: string; description: string }> = [
+  { value: "STANDARD", label: "Standard", description: "Balanced reading and reference layout." },
+  { value: "COMPACT", label: "Compact", description: "Dense technical hand-off with less whitespace." },
+  { value: "PRESENTATION", label: "Presentation", description: "Generous hierarchy for stakeholder review." },
 ];
 
 type Props = { projectId: string; generationUnlocked: boolean; refreshVersion?: number; onUpdated?: () => void };
@@ -75,6 +109,94 @@ function traceMatchesFilter(trace: DocumentationTraceResponse, filter: TraceFilt
   return true;
 }
 
+function exportStyleSummary(item: DocumentationExportResponse) {
+  if (!styledExportFormats.has(item.format)) return "";
+  return [item.template, item.theme, item.layout]
+    .filter((value): value is DocumentationExportTemplate | DocumentationExportTheme | DocumentationExportLayout => value != null)
+    .map(label)
+    .join(" · ");
+}
+
+function ExportStylePreview({
+  template,
+  theme,
+  layout,
+}: {
+  template: DocumentationExportTemplate;
+  theme: DocumentationExportTheme;
+  layout: DocumentationExportLayout;
+}) {
+  const selectedTemplate = exportTemplates.find((item) => item.value === template) ?? exportTemplates[0];
+  const selectedTheme = exportThemes.find((item) => item.value === theme) ?? exportThemes[0];
+  const selectedLayout = exportLayouts.find((item) => item.value === layout) ?? exportLayouts[0];
+  const verticalSpacing = layout === "PRESENTATION" ? "space-y-4" : layout === "COMPACT" ? "space-y-2" : "space-y-3";
+  const titleSize = layout === "PRESENTATION" ? "text-xl" : "text-lg";
+
+  return (
+    <section className={`overflow-hidden border bg-background ${selectedTheme.borderClass}`} aria-label={`${selectedTemplate.label} ${selectedTheme.label} export preview`}>
+      <div className={`h-1.5 ${selectedTheme.barClass}`} />
+      <div className={`border-b px-4 py-3 ${selectedTheme.borderClass} ${selectedTheme.softSurfaceClass}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className={`sf-meta font-semibold uppercase tracking-[0.14em] ${selectedTheme.textClass}`}>Export presentation preview</p>
+            <h5 className="mt-1 text-sm font-semibold text-foreground">{selectedTemplate.label} document package</h5>
+          </div>
+          <span className={`border px-2 py-1 text-[0.62rem] font-medium uppercase tracking-[0.08em] ${selectedTheme.borderClass} ${selectedTheme.surfaceClass} ${selectedTheme.textClass}`}>{selectedLayout.label}</span>
+        </div>
+      </div>
+
+      <div className={`p-4 ${verticalSpacing}`}>
+        <div className={`border-l-4 px-3 py-2.5 ${selectedTheme.borderClass} ${selectedTheme.softSurfaceClass}`}>
+          <p className={`sf-meta font-semibold uppercase tracking-[0.14em] ${selectedTheme.textClass}`}>Velocira / documentation package</p>
+          <p className={`mt-1.5 font-semibold text-foreground ${titleSize}`}>Project implementation brief</p>
+          <p className="mt-1 text-xs leading-5 text-foreground-secondary">A cover, structured findings, and visual hand-off built from this package.</p>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,1.2fr)_minmax(9rem,0.8fr)]">
+          <div>
+            <p className={`sf-meta font-semibold uppercase tracking-[0.12em] ${selectedTheme.textClass}`}>01 / Architecture overview</p>
+            <div className="mt-2 space-y-1.5">
+              <div className="h-2 w-11/12 bg-foreground/75" />
+              <div className="h-1.5 w-full bg-foreground-secondary/25" />
+              <div className="h-1.5 w-4/5 bg-foreground-secondary/25" />
+            </div>
+          </div>
+          <aside className={`border p-3 ${selectedTheme.borderClass} ${selectedTheme.surfaceClass}`}>
+            <p className={`sf-meta font-semibold uppercase tracking-[0.1em] ${selectedTheme.textClass}`}>Implementation signal</p>
+            <p className="mt-1.5 text-xs leading-5 text-foreground-secondary">Traceable requirements and delivery risks are called out without relying on color alone.</p>
+          </aside>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1.05fr)_minmax(10rem,0.95fr)]">
+          <div className="overflow-hidden border border-border">
+            <table className="w-full text-left text-[0.68rem]">
+              <caption className="sr-only">Preview of a styled traceability table</caption>
+              <thead className={selectedTheme.surfaceClass}>
+                <tr className={`sf-meta ${selectedTheme.textClass}`}><th className="px-2.5 py-2 font-medium">Requirement</th><th className="px-2.5 py-2 font-medium">Status</th></tr>
+              </thead>
+              <tbody className="text-foreground-secondary">
+                <tr className="border-t border-border"><td className="px-2.5 py-2 font-mono">FR-01</td><td className="px-2.5 py-2">Mapped</td></tr>
+                <tr className="border-t border-border"><td className="px-2.5 py-2 font-mono">NFR-04</td><td className="px-2.5 py-2">Reviewed</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <figure className={`border p-3 ${selectedTheme.borderClass} ${selectedTheme.softSurfaceClass}`}>
+            <svg viewBox="0 0 180 72" role="img" aria-label="Architecture diagram placeholder" className={`h-auto w-full ${selectedTheme.textClass}`}>
+              <rect x="8" y="20" width="46" height="28" rx="3" fill="none" stroke="currentColor" strokeWidth="2" />
+              <rect x="126" y="20" width="46" height="28" rx="3" fill="none" stroke="currentColor" strokeWidth="2" />
+              <path d="M57 34h64m-10-7 10 7-10 7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <circle cx="90" cy="34" r="5" fill="currentColor" />
+            </svg>
+            <figcaption className="mt-1.5 text-xs text-foreground-secondary">Themed diagram treatment</figcaption>
+          </figure>
+        </div>
+
+        <p className="text-xs leading-5 text-foreground-secondary"><span className="font-medium text-foreground">{selectedLayout.label}:</span> {selectedLayout.description} {selectedTemplate.description}</p>
+      </div>
+    </section>
+  );
+}
+
 function TraceLinks({ trace }: { trace: DocumentationTraceResponse }) {
   const links = [
     trace.useCaseId ? { label: "Use case", value: trace.useCaseId, tone: "accent" } : null,
@@ -94,6 +216,9 @@ export default function DocumentationPackageWorkspace({ projectId, generationUnl
   const [selectedPackageId, setSelectedPackageId] = useState("");
   const [selectedArtifactType, setSelectedArtifactType] = useState<DocumentationArtifactType | "">("");
   const [exportFormat, setExportFormat] = useState<DocumentationExportFormat>("ZIP");
+  const [exportTemplate, setExportTemplate] = useState<DocumentationExportTemplate>("EXECUTIVE");
+  const [exportTheme, setExportTheme] = useState<DocumentationExportTheme>("SIGNAL");
+  const [exportLayout, setExportLayout] = useState<DocumentationExportLayout>("STANDARD");
   const [traceFilter, setTraceFilter] = useState<TraceFilter>("ALL");
   const [traceQuery, setTraceQuery] = useState("");
   const [loading, setLoading] = useState(true);
@@ -107,6 +232,7 @@ export default function DocumentationPackageWorkspace({ projectId, generationUnl
   const latestSrs = srsVersions[0] ?? null;
   const selectedArtifact = useMemo(() => selectedPackage?.artifacts.find((artifact) => artifact.type === selectedArtifactType) ?? selectedPackage?.artifacts[0] ?? null, [selectedArtifactType, selectedPackage]);
   const selectedPackageSrs = useMemo(() => selectedPackage ? srsVersions.find((version) => version.id === selectedPackage.srsVersionId) ?? null : null, [selectedPackage, srsVersions]);
+  const supportsStyledExport = styledExportFormats.has(exportFormat);
   const validationIssues = selectedPackage?.validation.issues ?? [];
   const artifactValidationIssues = useMemo(() => selectedPackage?.artifacts.flatMap((artifact) => (artifact.validation.issues ?? []).map((issue) => ({ artifact: artifact.title, issue }))) ?? [], [selectedPackage]);
   const filteredTraces = useMemo(() => {
@@ -175,7 +301,10 @@ export default function DocumentationPackageWorkspace({ projectId, generationUnl
     if (!selectedPackage) return;
     setSubmitting(true); setActiveAction("export"); setError(null); setSuccessMessage(null);
     try {
-      const result = await documentationPackageApi.export(projectId, selectedPackage.id, exportFormat);
+      const request: DocumentationExportRequest = supportsStyledExport
+        ? { format: exportFormat, template: exportTemplate, theme: exportTheme, layout: exportLayout }
+        : { format: exportFormat };
+      const result = await documentationPackageApi.export(projectId, selectedPackage.id, request);
       if (result.success && result.data) {
         setExports((current) => [result.data!, ...current]);
         setSuccessMessage(`${result.data.filename} is ready to download.`);
@@ -274,8 +403,84 @@ export default function DocumentationPackageWorkspace({ projectId, generationUnl
           <div className="border border-border bg-background-secondary/25 p-4"><p className="sf-meta text-foreground-secondary">Review record</p><div className="mt-3 space-y-3 text-sm"><div><p className="text-foreground-secondary">Approved</p><p className="mt-1 text-foreground">{formatDate(selectedPackage.approvedAt)}</p></div><div><p className="text-foreground-secondary">Validation status</p><p className={`mt-1 font-medium ${selectedPackage.validation.valid === true ? "text-accent" : validationIssues.length + artifactValidationIssues.length > 0 ? "text-warning" : "text-foreground"}`}>{selectedPackage.validation.valid === true ? "Passed" : validationIssues.length + artifactValidationIssues.length > 0 ? "Findings reported" : "Not reported"}</p></div></div></div>
         </section>
 
-        <section className="border-t border-border pt-5" aria-labelledby="exports-heading"><div className="flex flex-col gap-3 sm:flex-row sm:items-end"><label className="grid flex-1 gap-1 text-sm text-foreground-secondary"><span className="sf-meta uppercase tracking-wide">Export format</span><select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as DocumentationExportFormat)} disabled={submitting} className="border border-input-border bg-input-bg px-3 py-2.5 text-sm text-foreground focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20">{exportFormats.map((format) => <option key={format.value} value={format.value}>{format.label}</option>)}</select></label><Button onClick={() => void createExport()} variant="outline" disabled={submitting} loading={submitting && activeAction === "export"} icon={<FileDown className="h-4 w-4" />}>Create export</Button></div>
-          <div className="mt-5"><div className="mb-3 flex flex-wrap items-baseline justify-between gap-2"><h4 id="exports-heading" className="text-sm font-semibold text-foreground">Export register</h4><span className="sf-meta text-foreground-secondary">{exports.length} file{exports.length === 1 ? "" : "s"}</span></div>{exports.length > 0 ? <div className="space-y-2">{exports.map((item) => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 border border-border px-3 py-3"><div className="min-w-0"><p className="truncate font-mono text-xs text-foreground">{item.filename}</p><p className="sf-meta mt-1 text-foreground-secondary">{label(item.format)} · {formatBytes(item.byteSize)} · {formatDate(item.completedAt ?? item.createdAt)}</p></div><div className="flex items-center gap-2"><StatusBadge status={exportStatus(item.status)} label={label(item.status)} /><Button size="sm" variant="outline" onClick={() => void download(item)} icon={<Download className="h-4 w-4" />}>Download</Button></div></div>)}</div> : <p className="border border-dashed border-border px-3 py-6 text-sm text-foreground-secondary">No exports have been created for this package.</p>}</div>
+        <section className="border-t border-border pt-5" aria-labelledby="exports-heading">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div className="max-w-2xl">
+              <h4 id="exports-heading" className="text-sm font-semibold text-foreground">Export package</h4>
+              <p className="mt-1 text-sm leading-6 text-foreground-secondary">Create a polished document package or download a faithful source artifact from this reviewed package.</p>
+            </div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <label className="grid min-w-52 gap-1 text-sm text-foreground-secondary">
+                <span className="sf-meta uppercase tracking-wide">Export format</span>
+                <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as DocumentationExportFormat)} disabled={submitting} className="border border-input-border bg-input-bg px-3 py-2.5 text-sm text-foreground focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20">
+                  {exportFormats.map((format) => <option key={format.value} value={format.value}>{format.label}</option>)}
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <fieldset disabled={!supportsStyledExport || submitting} aria-describedby="export-style-guidance" className={`mt-4 border p-4 ${supportsStyledExport ? "border-accent/30 bg-background-secondary/20" : "border-border bg-background-secondary/15"}`}>
+            <legend className="px-1 text-sm font-semibold text-foreground">Document presentation</legend>
+            <p id="export-style-guidance" className="mt-1 text-sm leading-5 text-foreground-secondary">{supportsStyledExport ? "Choose a template, color theme, and layout for the generated document package." : "Presentation choices apply to PDF, Word, and complete ZIP exports. Source artifacts remain direct, faithful downloads."}</p>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <label className="grid gap-1 text-sm text-foreground-secondary">
+                <span className="sf-meta uppercase tracking-wide">Template</span>
+                <select value={exportTemplate} onChange={(event) => setExportTemplate(event.target.value as DocumentationExportTemplate)} className="border border-input-border bg-input-bg px-3 py-2.5 text-sm text-foreground focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-55">
+                  {exportTemplates.map((template) => <option key={template.value} value={template.value}>{template.label}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-1 text-sm text-foreground-secondary">
+                <span className="sf-meta uppercase tracking-wide">Color theme</span>
+                <select value={exportTheme} onChange={(event) => setExportTheme(event.target.value as DocumentationExportTheme)} className="border border-input-border bg-input-bg px-3 py-2.5 text-sm text-foreground focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-55">
+                  {exportThemes.map((theme) => <option key={theme.value} value={theme.value}>{theme.label}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-1 text-sm text-foreground-secondary">
+                <span className="sf-meta uppercase tracking-wide">Layout</span>
+                <select value={exportLayout} onChange={(event) => setExportLayout(event.target.value as DocumentationExportLayout)} className="border border-input-border bg-input-bg px-3 py-2.5 text-sm text-foreground focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-55">
+                  {exportLayouts.map((layout) => <option key={layout.value} value={layout.value}>{layout.label}</option>)}
+                </select>
+              </label>
+            </div>
+          </fieldset>
+
+          {supportsStyledExport ? (
+            <div className="mt-4">
+              <ExportStylePreview template={exportTemplate} theme={exportTheme} layout={exportLayout} />
+            </div>
+          ) : (
+            <div className="mt-4 flex gap-3 border border-dashed border-border bg-background-secondary/15 px-4 py-3 text-sm text-foreground-secondary" role="status">
+              <Files className="mt-0.5 h-4 w-4 shrink-0 text-accent" aria-hidden="true" />
+              <p><span className="font-medium text-foreground">Direct source export.</span> This format preserves the original source exactly; no template, theme, or layout settings will be sent.</p>
+            </div>
+          )}
+
+          <div className="mt-4 flex justify-end">
+            <Button onClick={() => void createExport()} variant="outline" disabled={submitting} loading={submitting && activeAction === "export"} icon={<FileDown className="h-4 w-4" />}>Create export</Button>
+          </div>
+
+          <div className="mt-5">
+            <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+              <h5 className="text-sm font-semibold text-foreground">Export register</h5>
+              <span className="sf-meta text-foreground-secondary">{exports.length} file{exports.length === 1 ? "" : "s"}</span>
+            </div>
+            {exports.length > 0 ? (
+              <div className="space-y-2">
+                {exports.map((item) => {
+                  const styleSummary = exportStyleSummary(item);
+                  return (
+                    <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 border border-border px-3 py-3">
+                      <div className="min-w-0">
+                        <p className="truncate font-mono text-xs text-foreground">{item.filename}</p>
+                        <p className="sf-meta mt-1 text-foreground-secondary">{label(item.format)} · {formatBytes(item.byteSize)} · {formatDate(item.completedAt ?? item.createdAt)}{styleSummary ? <span className="text-foreground"> · {styleSummary}</span> : null}</p>
+                      </div>
+                      <div className="flex items-center gap-2"><StatusBadge status={exportStatus(item.status)} label={label(item.status)} /><Button size="sm" variant="outline" onClick={() => void download(item)} icon={<Download className="h-4 w-4" />}>Download</Button></div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : <p className="border border-dashed border-border px-3 py-6 text-sm text-foreground-secondary">No exports have been created for this package.</p>}
+          </div>
         </section>
       </Card>}
     </section>

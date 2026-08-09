@@ -531,6 +531,20 @@ export interface SrsVersionResponse {
 
 export type DocumentationArtifactType = "SRS" | "USE_CASES" | "ERD" | "OPENAPI" | "TRACEABILITY";
 export type DocumentationExportFormat = "ZIP" | "MARKDOWN" | "PDF" | "DOCX" | "OPENAPI_JSON" | "OPENAPI_YAML" | "UML_SOURCE" | "ERD_SOURCE";
+export type DocumentationExportTemplate = "EXECUTIVE" | "TECHNICAL" | "MINIMAL";
+export type DocumentationExportTheme = "SIGNAL" | "OCEAN" | "VIOLET" | "EMERALD" | "MONOCHROME";
+export type DocumentationExportLayout = "STANDARD" | "COMPACT" | "PRESENTATION";
+
+/**
+ * Style preferences are intentionally optional so format-only requests remain
+ * valid for source exports and older callers.
+ */
+export interface DocumentationExportRequest {
+  format: DocumentationExportFormat;
+  template?: DocumentationExportTemplate;
+  theme?: DocumentationExportTheme;
+  layout?: DocumentationExportLayout;
+}
 
 export interface DocumentationArtifactResponse {
   type: DocumentationArtifactType;
@@ -567,6 +581,9 @@ export interface DocumentationPackageResponse {
 export interface DocumentationExportResponse {
   id: string;
   format: DocumentationExportFormat;
+  template?: DocumentationExportTemplate | null;
+  theme?: DocumentationExportTheme | null;
+  layout?: DocumentationExportLayout | null;
   status: "READY" | "FAILED" | string;
   filename: string;
   contentType: string;
@@ -915,9 +932,9 @@ export const documentationPackageApi = {
     apiClient<DocumentationPackageResponse>(`/v1/projects/${projectId}/documentation-packages/${packageId}/approve`, { method: "POST" }),
   exports: (projectId: string, packageId: string) =>
     apiClient<DocumentationExportResponse[]>(`/v1/projects/${projectId}/documentation-packages/${packageId}/exports`, { method: "GET" }),
-  export: (projectId: string, packageId: string, format: DocumentationExportFormat) =>
+  export: (projectId: string, packageId: string, request: DocumentationExportRequest | DocumentationExportFormat) =>
     apiClient<DocumentationExportResponse>(`/v1/projects/${projectId}/documentation-packages/${packageId}/exports`, {
-      method: "POST", body: JSON.stringify({ format }),
+      method: "POST", body: JSON.stringify(typeof request === "string" ? { format: request } : request),
     }),
 };
 
