@@ -53,7 +53,7 @@ public class DocumentationPackageController {
     @PostMapping("/{packageId}/exports")
     public ResponseEntity<ApiResponse<DocumentationDtos.ExportResponse>> export(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable UUID projectId,
                                                                                    @PathVariable UUID packageId, @Valid @RequestBody DocumentationDtos.ExportRequest request) {
-        DocumentationDtos.ExportResponse result = exportService.create(projectId, packageId, principal.getUserId(), request.format());
+        DocumentationDtos.ExportResponse result = exportService.create(projectId, packageId, principal.getUserId(), request.format(), request.style());
         return ResponseEntity.status(201).body(ApiResponse.success(result, "Immutable export created.", 201));
     }
     @GetMapping("/{packageId}/exports/{exportId}/download")

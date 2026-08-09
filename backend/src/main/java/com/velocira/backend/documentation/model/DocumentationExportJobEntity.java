@@ -19,6 +19,13 @@ public class DocumentationExportJobEntity extends BaseEntity {
     @ManyToOne(fetch = FetchType.LAZY, optional = false) @JoinColumn(name = "owner_id", nullable = false)
     private UserEntity owner;
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 30) private DocumentationExportFormat format;
+    /** Null identifies an export created before visual-style metadata existed. */
+    @Enumerated(EnumType.STRING) @Column(name = "export_template", updatable = false, length = 30)
+    @Builder.Default private DocumentationExportTemplate template = DocumentationExportStyle.DEFAULT_TEMPLATE;
+    @Enumerated(EnumType.STRING) @Column(name = "export_theme", updatable = false, length = 30)
+    @Builder.Default private DocumentationExportTheme theme = DocumentationExportStyle.DEFAULT_THEME;
+    @Enumerated(EnumType.STRING) @Column(name = "export_layout", updatable = false, length = 30)
+    @Builder.Default private DocumentationExportLayout layout = DocumentationExportStyle.DEFAULT_LAYOUT;
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 30)
     @Builder.Default private DocumentationExportStatus status = DocumentationExportStatus.READY;
     @Column(nullable = false, length = 255) private String filename;

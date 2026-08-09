@@ -8,10 +8,16 @@
 
 # Temporary files and generated exports
 /tmp/
+/backend/tmp/
+/output/
 *.tmp
 *.bak
 *.swp
 *.swo
+
+# Local Codex and Graphify working state
+/.codex/
+/graphify-out/
 
 # Node / Next.js
 node_modules/
@@ -51,6 +57,8 @@ build/
 *.ear
 hs_err_pid*
 replay_pid*.log
+*.mv.db
+*.trace.db
 
 # IDEs and operating systems
 .idea/
