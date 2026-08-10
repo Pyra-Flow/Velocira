@@ -21,6 +21,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,6 +51,20 @@ class KnowledgeSourceServiceIntegrationTest {
         KnowledgeDtos.SourceResponse approved = sourceService.approve(fixture.project().getId(), uploaded.id(), fixture.owner().getId());
         assertThat(approved.status()).isEqualTo("APPROVED");
         assertThat(approved.chunkCount()).isGreaterThan(0);
+        KnowledgeDtos.SourceResponse pending = sourceService.upload(fixture.project().getId(), fixture.owner().getId(), "Unreviewed notes",
+                textFile("notes.txt", "The reporting cadence is not decided yet."));
+
+        List<KnowledgeDtos.SourceResponse> sources = sourceService.list(fixture.project().getId(), fixture.owner().getId());
+        assertThat(sources).extracting(KnowledgeDtos.SourceResponse::id)
+                .containsExactlyInAnyOrder(approved.id(), pending.id());
+        assertThat(sources).filteredOn(source -> source.id().equals(approved.id()))
+                .singleElement()
+                .extracting(KnowledgeDtos.SourceResponse::chunkCount)
+                .isEqualTo(approved.chunkCount());
+        assertThat(sources).filteredOn(source -> source.id().equals(pending.id()))
+                .singleElement()
+                .extracting(KnowledgeDtos.SourceResponse::chunkCount)
+                .isEqualTo(0);
         verify(knowledgeAiClient).index(any(KnowledgeAiClient.IndexChunk.class));
     }
 
