@@ -6,7 +6,6 @@ import com.velocira.backend.generation.config.GenerationProperties;
 import com.velocira.backend.interview.model.InterviewAnswerEntity;
 import com.velocira.backend.interview.model.OpenQuestionEntity;
 import com.velocira.backend.project.model.ProjectEntity;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
@@ -28,11 +27,20 @@ import java.util.UUID;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class HttpDiscoveryPlannerClient {
 
     private final ObjectMapper objectMapper;
     private final GenerationProperties properties;
+    private final HttpClient httpClient;
+
+    public HttpDiscoveryPlannerClient(ObjectMapper objectMapper, GenerationProperties properties) {
+        this.objectMapper = objectMapper;
+        this.properties = properties;
+        this.httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(properties.getAi().getConnectTimeout())
+                .build();
+    }
 
     public Optional<String> selectQuestionKey(
             ProjectEntity project,
@@ -56,11 +64,7 @@ public class HttpDiscoveryPlannerClient {
             if (token != null && !token.isBlank()) {
                 request.header("X-Internal-Token", token);
             }
-            HttpResponse<String> response = HttpClient.newBuilder()
-                    .version(HttpClient.Version.HTTP_1_1)
-                    .connectTimeout(properties.getAi().getConnectTimeout())
-                    .build()
-                    .send(request.build(), HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = httpClient.send(request.build(), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 log.debug("Discovery planner returned HTTP {}; using deterministic question order", response.statusCode());
                 return Optional.empty();

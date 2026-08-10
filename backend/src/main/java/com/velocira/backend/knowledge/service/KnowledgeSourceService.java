@@ -32,6 +32,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -56,8 +57,20 @@ public class KnowledgeSourceService {
     @Transactional(readOnly = true)
     public List<KnowledgeDtos.SourceResponse> list(UUID projectId, UUID ownerId) {
         ownedProject(projectId, ownerId);
-        return sourceRepository.findByProjectIdAndOwnerIdAndStatusNotOrderByCreatedAtDesc(projectId, ownerId, KnowledgeSourceStatus.DELETED)
-                .stream().map(this::response).toList();
+        List<KnowledgeSourceEntity> sources = sourceRepository
+                .findByProjectIdAndOwnerIdAndStatusNotOrderByCreatedAtDesc(projectId, ownerId, KnowledgeSourceStatus.DELETED);
+        if (sources.isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, Long> chunkCounts = chunkRepository.countBySourceIds(
+                        sources.stream().map(KnowledgeSourceEntity::getId).toList())
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        KnowledgeChunkRepository.SourceChunkCount::getSourceId,
+                        KnowledgeChunkRepository.SourceChunkCount::getChunkCount));
+        return sources.stream()
+                .map(source -> response(source, chunkCounts.getOrDefault(source.getId(), 0L)))
+                .toList();
     }
 
     @Transactional
@@ -97,7 +110,7 @@ public class KnowledgeSourceService {
         source = sourceRepository.save(source);
         auditService.record(ownerId, project.getOwner().getEmail(), AuditAction.KNOWLEDGE_SOURCE_UPLOADED,
                 "Uploaded project evidence: " + source.getTitle());
-        return response(source);
+        return response(source, 0);
     }
 
     @Transactional
@@ -129,7 +142,7 @@ public class KnowledgeSourceService {
         sourceRepository.save(source);
         auditService.record(ownerId, project.getOwner().getEmail(), AuditAction.KNOWLEDGE_SOURCE_APPROVED,
                 "Approved and indexed project evidence: " + source.getTitle());
-        return response(source);
+        return response(source, chunks.size());
     }
 
     @Transactional
@@ -184,9 +197,13 @@ public class KnowledgeSourceService {
     }
 
     private KnowledgeDtos.SourceResponse response(KnowledgeSourceEntity source) {
+        return response(source, chunkRepository.findBySourceIdOrderByChunkOrdinalAsc(source.getId()).size());
+    }
+
+    private KnowledgeDtos.SourceResponse response(KnowledgeSourceEntity source, long chunkCount) {
         return new KnowledgeDtos.SourceResponse(source.getId(), source.getTitle(), source.getOriginalFilename(), source.getMediaType(),
                 source.getClassification(), source.getStatus().name(), source.getScanMetadata(),
-                chunkRepository.findBySourceIdOrderByChunkOrdinalAsc(source.getId()).size(), source.getApprovedAt(), source.getCreatedAt());
+                Math.toIntExact(chunkCount), source.getApprovedAt(), source.getCreatedAt());
     }
 
     private KnowledgeSourceEntity requiredSource(UUID projectId, UUID sourceId, UUID ownerId) {

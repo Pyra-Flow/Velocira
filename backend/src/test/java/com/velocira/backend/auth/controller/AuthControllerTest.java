@@ -9,12 +9,14 @@ import com.velocira.backend.auth.security.JwtAuthenticationEntryPoint;
 import com.velocira.backend.auth.security.JwtAuthenticationFilter;
 import com.velocira.backend.auth.security.JwtProvider;
 import com.velocira.backend.auth.service.AuthService;
+import com.velocira.backend.config.JacksonConfig;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -45,6 +47,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @WebMvcTest(AuthController.class)
 @AutoConfigureMockMvc(addFilters = false)
+@Import(JacksonConfig.class)
 @ActiveProfiles("test")
 @DisplayName("AuthController Tests")
 class AuthControllerTest {
