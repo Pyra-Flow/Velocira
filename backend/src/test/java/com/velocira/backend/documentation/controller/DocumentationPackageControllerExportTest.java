@@ -9,6 +9,7 @@ import com.velocira.backend.documentation.dto.DocumentationDtos;
 import com.velocira.backend.documentation.exceptions.DocumentationPackageException;
 import com.velocira.backend.documentation.model.DocumentationExportFormat;
 import com.velocira.backend.documentation.model.DocumentationExportStyle;
+import com.velocira.backend.documentation.model.DocumentationArtifactType;
 import com.velocira.backend.documentation.service.DocumentationExportService;
 import com.velocira.backend.documentation.service.DocumentationPackageService;
 import org.junit.jupiter.api.AfterEach;
@@ -39,7 +40,9 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** MockMvc coverage for documentation-package export request compatibility and validation. */
@@ -136,5 +139,18 @@ class DocumentationPackageControllerExportTest {
         private String exportPath() {
             return "/v1/projects/" + projectId + "/documentation-packages/" + packageId + "/exports";
         }
+    }
+
+    @Test
+    @DisplayName("Serves the exact diagram preview payload used by the package renderer")
+    void shouldServeDiagramPreview() throws Exception {
+        byte[] svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        when(exportService.preview(projectId, packageId, userId, DocumentationArtifactType.ERD))
+                .thenReturn(new DocumentationExportService.Download("entity-relationship-diagram.svg", "image/svg+xml; charset=utf-8", svg));
+
+        mockMvc.perform(get("/v1/projects/{projectId}/documentation-packages/{packageId}/preview/{artifactType}", projectId, packageId, "ERD"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("image/svg+xml")))
+                .andExpect(content().bytes(svg));
     }
 }

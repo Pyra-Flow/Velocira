@@ -532,7 +532,7 @@ export interface SrsVersionResponse {
 export type DocumentationArtifactType = "SRS" | "USE_CASES" | "ERD" | "OPENAPI" | "TRACEABILITY";
 export type DocumentationExportFormat = "ZIP" | "MARKDOWN" | "PDF" | "DOCX" | "OPENAPI_JSON" | "OPENAPI_YAML" | "UML_SOURCE" | "ERD_SOURCE";
 export type DocumentationExportTemplate = "EXECUTIVE" | "TECHNICAL" | "MINIMAL";
-export type DocumentationExportTheme = "SIGNAL" | "OCEAN" | "VIOLET" | "EMERALD" | "MONOCHROME";
+export type DocumentationExportTheme = "SIGNAL" | "COMMAND" | "OCEAN" | "VIOLET" | "EMERALD" | "MONOCHROME";
 export type DocumentationExportLayout = "STANDARD" | "COMPACT" | "PRESENTATION";
 
 /**
@@ -951,6 +951,21 @@ export async function downloadDocumentationExport(projectId: string, packageId: 
     URL.revokeObjectURL(url);
     return null;
   } catch { return "Network error while downloading the export."; }
+}
+
+export async function fetchDocumentationArtifactPreview(projectId: string, packageId: string, artifactType: DocumentationArtifactType): Promise<{ url: string; filename: string } | { error: string }> {
+  const token = Cookies.get("accessToken");
+  try {
+    const response = await fetch(`${API_BASE}/v1/projects/${projectId}/documentation-packages/${packageId}/preview/${artifactType}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}, credentials: "include",
+    });
+    if (!response.ok) return { error: "The artifact preview could not be loaded." };
+    const disposition = response.headers.get("content-disposition") ?? "";
+    const filename = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1] ?? `${artifactType.toLowerCase()}.svg`;
+    return { url: URL.createObjectURL(await response.blob()), filename: decodeURIComponent(filename) };
+  } catch {
+    return { error: "Network error while loading the artifact preview." };
+  }
 }
 
 /* ================================================================== */

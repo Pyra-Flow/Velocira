@@ -3,6 +3,7 @@ package com.velocira.backend.documentation.controller;
 import com.velocira.backend.auth.security.AuthenticatedUser;
 import com.velocira.backend.common.dto.ApiResponse;
 import com.velocira.backend.documentation.dto.DocumentationDtos;
+import com.velocira.backend.documentation.model.DocumentationArtifactType;
 import com.velocira.backend.documentation.service.DocumentationExportService;
 import com.velocira.backend.documentation.service.DocumentationPackageService;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -62,6 +63,14 @@ public class DocumentationPackageController {
         DocumentationExportService.Download file = exportService.download(projectId, packageId, exportId, principal.getUserId());
         return ResponseEntity.ok().contentType(MediaType.parseMediaType(file.contentType()))
                 .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(file.filename(), StandardCharsets.UTF_8).build().toString())
+                .contentLength(file.bytes().length).body(file.bytes());
+    }
+    @GetMapping("/{packageId}/preview/{artifactType}")
+    public ResponseEntity<byte[]> preview(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable UUID projectId,
+                                          @PathVariable UUID packageId, @PathVariable DocumentationArtifactType artifactType) {
+        DocumentationExportService.Download file = exportService.preview(projectId, packageId, principal.getUserId(), artifactType);
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType(file.contentType()))
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.inline().filename(file.filename(), StandardCharsets.UTF_8).build().toString())
                 .contentLength(file.bytes().length).body(file.bytes());
     }
 }
