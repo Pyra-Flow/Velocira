@@ -2,8 +2,8 @@ package com.velocira.backend.generation.observability;
 
 import com.velocira.backend.generation.client.AiGenerationClient;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.actuate.health.Health;
-import org.springframework.boot.actuate.health.HealthIndicator;
+import org.springframework.boot.health.contributor.Health;
+import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.stereotype.Component;
 
 /** Reports readiness of the isolated generation service without exposing its configuration. */
