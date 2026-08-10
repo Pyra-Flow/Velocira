@@ -114,7 +114,7 @@ export default function GuidedBriefingWorkspace({
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-accent/25 bg-accent-light text-accent"><FolderOpen className="h-5 w-5" /></span>
             <div><p className="sf-meta text-accent">Documents</p><h2 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">Generate everything from your answers.</h2><p className="mt-1 text-sm text-foreground-secondary">Use the project brief directly, or optionally add a file when you want extra source citations.</p></div>
           </div>
-          <SrsWorkspace projectId={project.id} generationUnlocked={generationUnlocked} onUpdated={handleProjectUpdated} />
+          <SrsWorkspace projectId={project.id} projectName={project.name} projectDescription={project.description} generationUnlocked={generationUnlocked} onUpdated={handleProjectUpdated} />
           <DocumentationPackageWorkspace projectId={project.id} generationUnlocked={generationUnlocked} refreshVersion={documentRevision} onUpdated={handleProjectUpdated} />
         </section>
       </div>

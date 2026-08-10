@@ -17,7 +17,7 @@ ALTER TABLE documentation_export_jobs
 
 ALTER TABLE documentation_export_jobs
     ADD CONSTRAINT ck_documentation_export_theme
-        CHECK (export_theme IN ('SIGNAL', 'OCEAN', 'VIOLET', 'EMERALD', 'MONOCHROME'));
+        CHECK (export_theme IN ('SIGNAL', 'OCEAN', 'VIOLET', 'EMERALD', 'MONOCHROME', 'COMMAND'));
 
 ALTER TABLE documentation_export_jobs
     ADD CONSTRAINT ck_documentation_export_layout

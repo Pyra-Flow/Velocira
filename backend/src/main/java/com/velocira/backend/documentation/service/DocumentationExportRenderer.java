@@ -33,6 +33,7 @@ import org.apache.poi.xwpf.usermodel.XWPFTableCell;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPageMar;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPageSz;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSectPr;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTBackground;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.STFldCharType;
 import org.springframework.stereotype.Component;
 
@@ -94,6 +95,27 @@ public class DocumentationExportRenderer {
         } catch (IOException exception) {
             throw new IllegalStateException("Unable to render the documentation export.", exception);
         }
+    }
+
+    /**
+     * Produces the exact same visual diagram payload that is placed in a ZIP export.
+     * The web viewer consumes this response so diagram preview and download never drift.
+     */
+    public RenderedExport renderPreview(DocumentationArtifactType artifactType, DocumentationPackageEntity documentationPackage,
+                                        List<DocumentationArtifactEntity> artifacts, DocumentationExportStyle requestedStyle) {
+        DocumentationExportStyle style = requestedStyle == null ? DocumentationExportStyle.defaults() : requestedStyle;
+        Map<DocumentationArtifactType, DocumentationArtifactEntity> byType = new EnumMap<>(DocumentationArtifactType.class);
+        artifacts.forEach(artifact -> byType.put(artifact.getArtifactType(), artifact));
+        PackageSnapshot snapshot = PackageSnapshot.from(documentationPackage, byType);
+        Theme theme = Theme.from(style.theme());
+        return switch (artifactType) {
+            case USE_CASES -> new RenderedExport("use-case-map.svg", "image/svg+xml; charset=utf-8",
+                    useCaseSvg(snapshot.canonicalModel(), theme, style.template()).getBytes(StandardCharsets.UTF_8));
+            case ERD -> new RenderedExport("entity-relationship-diagram.svg", "image/svg+xml; charset=utf-8",
+                    erdSvg(snapshot.canonicalModel(), theme, style.template()).getBytes(StandardCharsets.UTF_8));
+            default -> new RenderedExport(artifactType.name().toLowerCase(Locale.ROOT) + ".md", "text/markdown; charset=utf-8",
+                    snapshot.artifact(artifactType).sourceContent().getBytes(StandardCharsets.UTF_8));
+        };
     }
 
     private RenderedExport sourceExport(String projectSlug, PackageSnapshot snapshot, DocumentationArtifactType type,
@@ -203,6 +225,12 @@ public class DocumentationExportRenderer {
     }
 
     private void configureDocxFurniture(XWPFDocument document, PackageSnapshot snapshot, DocumentationExportStyle style, Theme theme) {
+        if (style.theme() == DocumentationExportTheme.COMMAND) {
+            CTBackground background = document.getDocument().isSetBackground()
+                    ? document.getDocument().getBackground()
+                    : document.getDocument().addNewBackground();
+            background.setColor(theme.canvasHex());
+        }
         XWPFHeader header = document.createHeader(HeaderFooterType.DEFAULT);
         XWPFParagraph headerParagraph = header.createParagraph();
         headerParagraph.setSpacingAfter(0);
@@ -264,7 +292,7 @@ public class DocumentationExportRenderer {
         XWPFTableCell labelCell = row.getCell(0);
         XWPFTableCell valueCell = row.getCell(1);
         labelCell.setColor(theme.softHex());
-        valueCell.setColor("FFFFFF");
+        valueCell.setColor(theme.canvasHex());
         setDocxCell(labelCell, label.toUpperCase(Locale.ROOT), 8, theme.primaryHex(), true);
         setDocxCell(valueCell, value, 10, theme.inkHex(), false);
     }
@@ -386,7 +414,7 @@ public class DocumentationExportRenderer {
         Graphics2D graphics = image.createGraphics();
         try {
             graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            graphics.setColor(Color.WHITE);
+            graphics.setColor(theme.canvas());
             graphics.fillRect(0, 0, width, height);
             graphics.setColor(theme.primary());
             graphics.fillRect(0, 0, width, 18);
@@ -450,7 +478,7 @@ public class DocumentationExportRenderer {
         if (count == 0) lines.append("<text x=\"90\" y=\"132\" font-family=\"Arial\" font-size=\"14\" fill=\"").append(theme.mutedHex()).append("\">No functional use cases were recorded.</text>");
         int height = Math.max(210, y + 52);
         return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"780\" height=\"" + height + "\" viewBox=\"0 0 780 " + height + "\">"
-                + "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/><rect width=\"100%\" height=\"18\" fill=\"" + theme.primaryHex() + "\"/>"
+                + "<rect width=\"100%\" height=\"100%\" fill=\"#" + theme.canvasHex() + "\"/><rect width=\"100%\" height=\"18\" fill=\"" + theme.primaryHex() + "\"/>"
                 + "<text x=\"42\" y=\"62\" font-family=\"Arial\" font-size=\"24\" font-weight=\"bold\" fill=\"" + theme.inkHex() + "\">Use case map</text>"
                 + "<text x=\"42\" y=\"87\" font-family=\"Arial\" font-size=\"13\" fill=\"" + theme.mutedHex() + "\">" + escapeXml(template.name().toLowerCase(Locale.ROOT)) + " documentation presentation</text>" + lines + "</svg>";
     }
@@ -471,7 +499,7 @@ public class DocumentationExportRenderer {
         if (count == 0) boxes.append("<text x=\"52\" y=\"130\" font-family=\"Arial\" font-size=\"14\" fill=\"").append(theme.mutedHex()).append("\">No entities were recorded.</text>");
         int height = Math.max(210, y + 42);
         return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"500\" height=\"" + height + "\" viewBox=\"0 0 500 " + height + "\">"
-                + "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/><rect width=\"100%\" height=\"18\" fill=\"" + theme.primaryHex() + "\"/>"
+                + "<rect width=\"100%\" height=\"100%\" fill=\"#" + theme.canvasHex() + "\"/><rect width=\"100%\" height=\"18\" fill=\"" + theme.primaryHex() + "\"/>"
                 + "<text x=\"52\" y=\"62\" font-family=\"Arial\" font-size=\"24\" font-weight=\"bold\" fill=\"" + theme.inkHex() + "\">Entity relationship diagram</text>"
                 + "<text x=\"52\" y=\"87\" font-family=\"Arial\" font-size=\"13\" fill=\"" + theme.mutedHex() + "\">" + escapeXml(template.name().toLowerCase(Locale.ROOT)) + " documentation presentation</text>" + boxes + "</svg>";
     }
@@ -559,14 +587,15 @@ public class DocumentationExportRenderer {
         }
     }
 
-    private record Theme(String primaryHex, String softHex, String inkHex, String mutedHex) {
+    private record Theme(String primaryHex, String softHex, String inkHex, String mutedHex, String canvasHex) {
         static Theme from(DocumentationExportTheme theme) {
             return switch (theme) {
-                case SIGNAL -> new Theme("5B4FE9", "EEEAFE", "1E1B4B", "5F5B78");
-                case OCEAN -> new Theme("0E7490", "E0F2FE", "0C4A6E", "4B6470");
-                case VIOLET -> new Theme("7C3AED", "F3E8FF", "3B0764", "665078");
-                case EMERALD -> new Theme("047857", "D1FAE5", "064E3B", "4B635D");
-                case MONOCHROME -> new Theme("475569", "F1F5F9", "1E293B", "64748B");
+                case SIGNAL -> new Theme("5B4FE9", "EEEAFE", "1E1B4B", "5F5B78", "FFFFFF");
+                case COMMAND -> new Theme("4EC7B6", "112238", "E7F1F5", "8FA4B5", "07101B");
+                case OCEAN -> new Theme("0E7490", "E0F2FE", "0C4A6E", "4B6470", "FFFFFF");
+                case VIOLET -> new Theme("7C3AED", "F3E8FF", "3B0764", "665078", "FFFFFF");
+                case EMERALD -> new Theme("047857", "D1FAE5", "064E3B", "4B635D", "FFFFFF");
+                case MONOCHROME -> new Theme("475569", "F1F5F9", "1E293B", "64748B", "FFFFFF");
             };
         }
 
@@ -574,6 +603,7 @@ public class DocumentationExportRenderer {
         Color soft() { return Color.decode("#" + softHex); }
         Color ink() { return Color.decode("#" + inkHex); }
         Color muted() { return Color.decode("#" + mutedHex); }
+        Color canvas() { return Color.decode("#" + canvasHex); }
     }
 
     private final class PdfComposer {
@@ -601,17 +631,20 @@ public class DocumentationExportRenderer {
             document.addPage(page);
             pageNumber = 1;
             try (PDPageContentStream cover = new PDPageContentStream(document, page)) {
-                cover.setNonStrokingColor(theme.primary());
+                cover.setNonStrokingColor(theme.canvas());
                 cover.addRect(0, 0, PDRectangle.LETTER.getWidth(), PDRectangle.LETTER.getHeight());
                 cover.fill();
-                cover.setNonStrokingColor(Color.WHITE);
+                cover.setNonStrokingColor(theme.primary());
+                cover.addRect(0, 774, PDRectangle.LETTER.getWidth(), 18);
+                cover.fill();
+                cover.setNonStrokingColor(theme.ink());
                 writeAt(cover, "VELOCIRA", bold, 12, 54, 720);
                 writeAt(cover, "DOCUMENTATION PACKAGE", bold, 10, 54, 696);
                 writeAt(cover, pdfText(snapshot.projectName()), bold, style.layout() == DocumentationExportLayout.PRESENTATION ? 31 : 27, 54, 620);
                 writeAt(cover, pdfText(template.coverline()), regular, 14, 54, 588);
                 writeAt(cover, "Package v" + snapshot.versionNumber() + "  |  Source SRS v" + snapshot.srsVersionNumber(), regular, 11, 54, 530);
                 writeAt(cover, "Template: " + style.template() + "  |  Theme: " + style.theme() + "  |  Layout: " + style.layout(), regular, 10, 54, 506);
-                cover.setNonStrokingColor(new Color(255, 255, 255, 48));
+                cover.setNonStrokingColor(theme.soft());
                 cover.addRect(54, 165, 504, 118);
                 cover.fill();
                 cover.setNonStrokingColor(theme.ink());
@@ -682,8 +715,11 @@ public class DocumentationExportRenderer {
             document.addPage(page);
             pageNumber++;
             stream = new PDPageContentStream(document, page);
+            stream.setNonStrokingColor(theme.canvas());
+            stream.addRect(0, 0, PDRectangle.LETTER.getWidth(), PDRectangle.LETTER.getHeight());
+            stream.fill();
             stream.setNonStrokingColor(theme.primary());
-            stream.addRect(0, 774, PDRectangle.LETTER.getWidth(), 18);
+            stream.addRect(0, 774, PDRectangle.LETTER.getWidth(), 3);
             stream.fill();
             stream.setNonStrokingColor(theme.muted());
             writeAt(stream, "VELOCIRA  |  " + pdfText(snapshot.projectName()), regular, 8, 54, 755);

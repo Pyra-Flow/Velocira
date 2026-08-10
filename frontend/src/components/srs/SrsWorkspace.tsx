@@ -19,6 +19,7 @@ import StatusBadge from "@/components/ui/StatusBadge";
 import { useSignalMotion } from "@/components/ui/Animations";
 import {
   knowledgeSourceApi,
+  projectApi,
   srsApi,
   type KnowledgeSourceResponse,
   type SrsRequirementResponse,
@@ -26,8 +27,8 @@ import {
   type StandardsProfileResponse,
 } from "@/lib/api";
 
-type Props = { projectId: string; generationUnlocked: boolean; onUpdated?: () => void };
-type ActiveAction = "generate" | "upload" | "source" | null;
+type Props = { projectId: string; projectName: string; projectDescription: string; generationUnlocked: boolean; onUpdated?: () => void };
+type ActiveAction = "generate" | "upload" | "source" | "project" | null;
 const EMPTY_REQUIREMENTS: SrsRequirementResponse[] = [];
 
 function label(value: string) {
@@ -108,13 +109,15 @@ function RequirementRow({ requirement, sources }: { requirement: SrsRequirementR
   );
 }
 
-export default function SrsWorkspace({ projectId, generationUnlocked, onUpdated }: Props) {
+export default function SrsWorkspace({ projectId, projectName, projectDescription, generationUnlocked, onUpdated }: Props) {
   const [sources, setSources] = useState<KnowledgeSourceResponse[]>([]);
   const [profiles, setProfiles] = useState<StandardsProfileResponse[]>([]);
   const [versions, setVersions] = useState<SrsVersionResponse[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("STARTER");
   const [selectedVersionId, setSelectedVersionId] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [draftProjectName, setDraftProjectName] = useState(projectName);
+  const [draftProjectDescription, setDraftProjectDescription] = useState(projectDescription);
   const [requirementQuery, setRequirementQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -201,6 +204,25 @@ export default function SrsWorkspace({ projectId, generationUnlocked, onUpdated 
       setActiveAction(null); setSubmitting(false);
     }
   };
+  const saveProjectContext = async () => {
+    const name = draftProjectName.trim();
+    const description = draftProjectDescription.trim();
+    if (name.length < 2) { setError("Project name must contain at least 2 characters."); return; }
+    if (!description) { setError("Project description is required."); return; }
+    setSubmitting(true); setActiveAction("project"); setError(null); setSuccessMessage(null);
+    try {
+      const result = await projectApi.update(projectId, { name, description });
+      if (!result.success || !result.data) { setError(result.message); return; }
+      setDraftProjectName(result.data.name);
+      setDraftProjectDescription(result.data.description);
+      setSuccessMessage("Project name and description are ready for document generation.");
+      onUpdated?.();
+    } catch (caught) {
+      setError(requestErrorMessage(caught, "Project details could not be saved. Please try again."));
+    } finally {
+      setActiveAction(null); setSubmitting(false);
+    }
+  };
   const updateSource = async (source: KnowledgeSourceResponse, action: "approve" | "reject" | "delete") => {
     setSubmitting(true); setActiveAction("source"); setError(null); setSuccessMessage(null);
     try {
@@ -219,7 +241,7 @@ export default function SrsWorkspace({ projectId, generationUnlocked, onUpdated 
 
   if (loading) return <Card className="flex items-center gap-2 py-8 text-sm text-foreground-secondary" role="status" aria-live="polite"><Loader2 className="h-5 w-5 animate-spin text-accent" /> Loading document controls…</Card>;
 
-  const operationLabel = activeAction === "generate" ? "Generating SRS" : activeAction === "upload" ? "Adding source evidence" : activeAction === "source" ? "Updating source review" : null;
+  const operationLabel = activeAction === "generate" ? "Generating SRS" : activeAction === "upload" ? "Adding source evidence" : activeAction === "source" ? "Updating source review" : activeAction === "project" ? "Saving project context" : null;
   const validationTone = selectedVersion?.validation.valid === false ? "error" : validationIssues.length > 0 ? "warning" : "accent";
 
   return (
@@ -232,6 +254,14 @@ export default function SrsWorkspace({ projectId, generationUnlocked, onUpdated 
             <Button onClick={() => void generate()} disabled={!generationUnlocked || submitting} loading={submitting && activeAction === "generate"} icon={<FileText className="h-4 w-4" />}>Generate SRS</Button>
           </div>
         </div>
+        <section className="mt-5 border-t border-border pt-5" aria-labelledby="ready-project-heading">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between"><div><h3 id="ready-project-heading" className="text-sm font-semibold text-foreground">Ready this project for generation</h3><p className="mt-1 text-sm text-foreground-secondary">Keep the project context current before generating SRS, PDFs, Word files, and diagrams.</p></div><span className="sf-meta text-accent">Step 1 / Project context</span></div>
+          <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(15rem,.65fr)_minmax(0,1.35fr)_auto] lg:items-end">
+            <label className="grid gap-1 text-sm text-foreground-secondary"><span className="sf-meta uppercase tracking-wide">Project name</span><input value={draftProjectName} onChange={(event) => setDraftProjectName(event.target.value)} disabled={submitting} placeholder="e.g. ClinicFlow" className="rounded-md border border-input-border bg-input-bg px-3 py-2.5 text-sm text-foreground placeholder:text-foreground-secondary focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20" /></label>
+            <label className="grid gap-1 text-sm text-foreground-secondary"><span className="sf-meta uppercase tracking-wide">Project description</span><textarea value={draftProjectDescription} onChange={(event) => setDraftProjectDescription(event.target.value)} disabled={submitting} rows={2} placeholder="Describe the product, its users, and the problem it solves." className="min-h-[66px] resize-y rounded-md border border-input-border bg-input-bg px-3 py-2.5 text-sm text-foreground placeholder:text-foreground-secondary focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20" /></label>
+            <Button onClick={() => void saveProjectContext()} variant="outline" disabled={submitting || (draftProjectName.trim() === projectName && draftProjectDescription.trim() === projectDescription)} loading={submitting && activeAction === "project"}>Save details</Button>
+          </div>
+        </section>
         {!generationUnlocked && <p className="mt-4 border border-border bg-background-secondary/60 px-3 py-2.5 text-sm text-foreground-secondary">Finish the active discovery question above and this button unlocks automatically.</p>}
         {selectedProfileInfo && <p className="sf-meta mt-4 text-foreground-secondary">{selectedProfileInfo.description} · {selectedProfileInfo.controls.length} included checks</p>}
         <AnimatePresence initial={false}>

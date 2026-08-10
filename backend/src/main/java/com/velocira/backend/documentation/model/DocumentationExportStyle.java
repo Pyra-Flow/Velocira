@@ -14,8 +14,8 @@ public record DocumentationExportStyle(
         DocumentationExportTheme theme,
         DocumentationExportLayout layout) {
 
-    public static final DocumentationExportTemplate DEFAULT_TEMPLATE = DocumentationExportTemplate.EXECUTIVE;
-    public static final DocumentationExportTheme DEFAULT_THEME = DocumentationExportTheme.SIGNAL;
+    public static final DocumentationExportTemplate DEFAULT_TEMPLATE = DocumentationExportTemplate.TECHNICAL;
+    public static final DocumentationExportTheme DEFAULT_THEME = DocumentationExportTheme.COMMAND;
     public static final DocumentationExportLayout DEFAULT_LAYOUT = DocumentationExportLayout.STANDARD;
 
     public DocumentationExportStyle {

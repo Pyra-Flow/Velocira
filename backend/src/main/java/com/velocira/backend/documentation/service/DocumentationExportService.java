@@ -83,6 +83,14 @@ public class DocumentationExportService {
         return new Download(job.getFilename(), job.getContentType(), job.getContent());
     }
 
+    @Transactional(readOnly = true)
+    public Download preview(UUID projectId, UUID packageId, UUID ownerId, DocumentationArtifactType artifactType) {
+        DocumentationPackageEntity documentationPackage = requiredPackage(projectId, packageId, ownerId);
+        DocumentationExportRenderer.RenderedExport rendered = renderer.renderPreview(artifactType, documentationPackage,
+                artifactRepository.findByDocumentationPackageIdOrderByArtifactTypeAsc(packageId), DocumentationExportStyle.defaults());
+        return new Download(rendered.filename(), rendered.contentType(), rendered.content());
+    }
+
     private DocumentationPackageEntity requiredPackage(UUID projectId, UUID packageId, UUID ownerId) {
         return packageRepository.findByIdAndProjectIdAndOwnerId(packageId, projectId, ownerId)
                 .orElseThrow(() -> new DocumentationPackageException("Documentation package not found.", HttpStatus.NOT_FOUND));
