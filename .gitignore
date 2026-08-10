@@ -18,6 +18,8 @@
 # Local Codex and Graphify working state
 /.codex/
 /graphify-out/
+/.serena/
+/AGENTS.md
 
 # Node / Next.js
 node_modules/
