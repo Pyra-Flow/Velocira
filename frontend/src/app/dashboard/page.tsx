@@ -29,7 +29,7 @@ function projectTypeLabel(type: string) {
 function ProjectCard({ project }: { project: ProjectResponse }) {
   return (
     <Link href={`/projects/${project.id}`}>
-      <Card hover className="group h-full cursor-pointer">
+      <Card hover className="sf-project-card group h-full cursor-pointer">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -63,6 +63,30 @@ function ProjectCard({ project }: { project: ProjectResponse }) {
         </div>
       </Card>
     </Link>
+  );
+}
+
+function ProjectTable({ projects }: { projects: ProjectResponse[] }) {
+  return (
+    <div className="sf-project-table" role="region" aria-label="Projects">
+      <div className="sf-project-table__head" role="row">
+        <span role="columnheader">Project</span>
+        <span role="columnheader">Lifecycle</span>
+        <span role="columnheader">Readiness</span>
+        <span role="columnheader">Last signal</span>
+        <span role="columnheader">Next move</span>
+      </div>
+      {projects.map((project) => (
+        <Link key={project.id} href={`/projects/${project.id}`} className="sf-project-table__row" aria-label={`Open ${project.name}`}>
+          <span className="sf-project-table__project"><span className="sf-project-table__file"><FileText className="h-4 w-4" /></span><span><strong>{project.name}</strong><small>{projectTypeLabel(project.type)}</small></span></span>
+          <span><StatusBadge status={project.status} /></span>
+          <span className="sf-project-table__meter"><SignalMeter value={project.progress} label={`${project.progress}%`} /></span>
+          <span className="sf-project-table__updated"><Clock className="h-3.5 w-3.5" />{formatRelativeTime(project.updatedAt)}</span>
+          <span className="sf-project-table__action">Open workspace <ArrowRight className="h-3.5 w-3.5" /></span>
+        </Link>
+      ))}
+      <Link href="/projects/new" className="sf-project-table__create"><Plus className="h-5 w-5" /><span><strong>Create the next project</strong><small>Start with a brief and add context when it is useful.</small></span><ArrowRight className="h-4 w-4" /></Link>
+    </div>
   );
 }
 
@@ -110,7 +134,7 @@ export default function DashboardPage() {
         <div className="workspace-page__inner">
           <WorkspacePageHeader
             eyebrow="Project command center"
-            title="Keep documentation moving."
+            title="Dashboard"
             description="See what needs discovery, review, or approval next—then open the exact project workspace to continue."
             actions={<Link href="/projects/new"><Button icon={<Plus className="h-4 w-4" />}>New project</Button></Link>}
           />
@@ -129,7 +153,7 @@ export default function DashboardPage() {
             <h2 className="text-base font-semibold text-foreground">Your workspace</h2>
             <p className="mt-1 text-sm text-foreground-secondary">Filter by lifecycle state.</p>
           </div>
-          <div className="flex w-fit gap-1 rounded-xl border border-border bg-background-secondary/80 p-1">
+          <div className="sf-filter-row flex w-fit gap-1 rounded-xl border border-border bg-background-secondary/80 p-1">
           {filters.map(({ key, label, count }) => (
             <button
               key={key}
@@ -155,12 +179,12 @@ export default function DashboardPage() {
         ) : filteredProjects.length === 0 ? (
           <div className="workspace-empty-state"><FolderOpen aria-hidden="true" /><h2>{projects.length === 0 ? "Start your first project" : "No projects in this view"}</h2><p>{projects.length === 0 ? "Create a workspace, describe the problem, and let the guided briefing collect the detail needed for review." : "Choose a different lifecycle filter to see more projects."}</p>{projects.length === 0 && <Link href="/projects/new"><Button size="sm" icon={<Plus className="h-4 w-4" />}>Create project</Button></Link>}</div>
         ) : (
-          <motion.div
-            layout
-            className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3"
-          >
-            {filteredProjects.map((project) => <ProjectCard key={project.id} project={project} />)}
-          </motion.div>
+          <div className="space-y-5">
+            <div className="hidden lg:block"><ProjectTable projects={filteredProjects} /></div>
+            <motion.div layout className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:hidden">
+              {filteredProjects.map((project) => <ProjectCard key={project.id} project={project} />)}
+            </motion.div>
+          </div>
         )}
         </div>
       </section>

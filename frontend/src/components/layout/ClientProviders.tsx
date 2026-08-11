@@ -63,7 +63,7 @@ export default function ClientProviders({
               <div className={`min-h-screen flex flex-col relative ${usesWorkspaceChrome ? "workspace-shell" : ""}`}>
                 {usesMarketingChrome && <><ScrollProgressBar /><Navbar /></>}
                 {usesWorkspaceChrome && <WorkspaceHeader onOpenCommandPalette={() => setCommandPaletteOpen(true)} />}
-                <main className={usesWorkspaceChrome || isAuthRoute ? "flex-1" : "flex-1 pt-24"}>{children}</main>
+                <main className={usesWorkspaceChrome || isAuthRoute ? "flex-1" : "flex-1 pt-16"}>{children}</main>
                 {usesMarketingChrome && <Footer />}
               </div>
               {usesWorkspaceChrome && <CommandPalette actions={commandActions} open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />}

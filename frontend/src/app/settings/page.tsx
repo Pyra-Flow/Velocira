@@ -145,10 +145,10 @@ export default function SettingsPage() {
 
   return (
     <PageTransition>
-      <section className="workspace-page"><div className="workspace-page__inner max-w-3xl">
+      <section className="workspace-page sf-settings-page"><div className="workspace-page__inner max-w-3xl">
         <FadeIn><WorkspacePageHeader eyebrow="Personal workspace" title="Settings" description="Manage your profile, security controls, and active account access." /></FadeIn>
-        <FadeIn delay={0.04} className="mb-6"><Card className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end"><div><p className="sf-meta text-accent">Workspace readiness</p><h2 className="mt-2 text-lg font-semibold text-foreground">Profile signal</h2><p className="mt-1 text-sm text-foreground-secondary">A complete profile helps keep your workspace context clear for teammates and reviews.</p></div><div className="min-w-52"><SignalMeter value={profileCompletion} label="Profile completeness" /></div></Card></FadeIn>
-        <div className="space-y-6">
+        <FadeIn delay={0.04} className="mb-6"><Card className="sf-settings-readiness grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end"><div><p className="sf-meta text-accent">Workspace readiness</p><h2 className="mt-2 text-lg font-semibold text-foreground">Profile signal</h2><p className="mt-1 text-sm text-foreground-secondary">A complete profile helps keep your workspace context clear for teammates and reviews.</p></div><div className="min-w-52"><SignalMeter value={profileCompletion} label="Profile completeness" /></div></Card></FadeIn>
+        <div className="sf-settings-sections space-y-6">
           <form onSubmit={(event) => { event.preventDefault(); void saveProfile(); }}><Card>
             <div className="mb-6 flex items-center gap-3"><User className="h-5 w-5 text-accent" /><div><h2 className="font-semibold text-foreground">Profile</h2><p className="text-sm text-foreground-secondary">Your profile information is stored in your account.</p></div></div>
             <div className="grid gap-4 sm:grid-cols-2">

@@ -458,6 +458,17 @@ export default function AdminUsersPage() {
             </div>
           </FadeIn>
 
+          <FadeIn delay={0.03}>
+            <div className="sf-admin-metrics" aria-label="User directory summary">
+              {[
+                { label: "Directory total", value: totalElements, tone: "neutral" },
+                { label: "Shown on this page", value: users.length, tone: "accent" },
+                { label: "Active accounts", value: activeCount, tone: "success" },
+                { label: "Suspended accounts", value: suspendedCount, tone: "warning" },
+              ].map((metric) => <div key={metric.label} data-tone={metric.tone}><p>{metric.label}</p><strong>{metric.value.toLocaleString()}</strong></div>)}
+            </div>
+          </FadeIn>
+
           {/* ---------- Filters + Bulk Actions ---------- */}
           <FadeIn delay={0.05}>
             <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">

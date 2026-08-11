@@ -14,8 +14,13 @@ public record DocumentationExportStyle(
         DocumentationExportTheme theme,
         DocumentationExportLayout layout) {
 
-    public static final DocumentationExportTemplate DEFAULT_TEMPLATE = DocumentationExportTemplate.TECHNICAL;
-    public static final DocumentationExportTheme DEFAULT_THEME = DocumentationExportTheme.COMMAND;
+    /**
+     * A clean, print-friendly baseline. More expressive themes remain available when a caller
+     * explicitly requests them, but generated handoff files should never default to a dark or
+     * highly coloured presentation.
+     */
+    public static final DocumentationExportTemplate DEFAULT_TEMPLATE = DocumentationExportTemplate.MINIMAL;
+    public static final DocumentationExportTheme DEFAULT_THEME = DocumentationExportTheme.MONOCHROME;
     public static final DocumentationExportLayout DEFAULT_LAYOUT = DocumentationExportLayout.STANDARD;
 
     public DocumentationExportStyle {

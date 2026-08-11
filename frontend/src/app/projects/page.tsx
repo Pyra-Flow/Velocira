@@ -92,7 +92,7 @@ export default function ProjectsPage() {
 
   const [search, setSearch] = useState("");
   const [activeFilter, setActiveFilter] = useState<ProjectStatus | "ALL">("ALL");
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [viewMode, setViewMode] = useState<"grid" | "list">("list");
   const [debouncedSearch, setDebouncedSearch] = useState("");
 
   /* ---- Protected route ---- */
@@ -170,7 +170,7 @@ export default function ProjectsPage() {
               />
             </div>
 
-            <div className="flex items-center gap-1 rounded-xl border border-border bg-card p-1">
+            <div className="sf-filter-row flex items-center gap-1 rounded-xl border border-border bg-card p-1">
               <button
                 type="button"
                 onClick={() => setViewMode("grid")}
@@ -205,7 +205,7 @@ export default function ProjectsPage() {
         {/*  Filter Tabs                                              */}
         {/* -------------------------------------------------------- */}
         <FadeIn delay={0.1}>
-          <div className="mb-8 flex flex-wrap gap-2" aria-label="Project status filter">
+          <div className="sf-filter-row mb-8 flex flex-wrap gap-2" aria-label="Project status filter">
             {FILTER_TABS.map((tab) => {
               const isActive = activeFilter === tab.value;
               return (

@@ -32,6 +32,7 @@ import {
   type DocumentationExportFormat,
   type DocumentationExportResponse,
   type DocumentationPackageResponse,
+  type DocumentationTraceResponse,
   type SrsVersionResponse,
 } from "@/lib/api";
 
@@ -104,6 +105,70 @@ function DocumentTextPreview({ artifact }: { artifact: DocumentationArtifactResp
         if (!raw.trim()) return <div key={`space-${index}`} className={styles.documentGap} />;
         return <p key={`${raw}-${index}`} className={inCode ? styles.documentCode : styles.documentParagraph}>{raw}</p>;
       })}
+    </div>
+  );
+}
+
+type OpenApiOperation = {
+  summary?: string;
+  operationId?: string;
+  responses?: Record<string, { description?: string }>;
+  "x-velocira-requirement-id"?: string;
+};
+type OpenApiDocument = {
+  openapi?: string;
+  info?: { title?: string; version?: string; description?: string };
+  paths?: Record<string, Record<string, OpenApiOperation>>;
+  components?: { schemas?: Record<string, { type?: string; required?: string[] }> };
+};
+
+function OpenApiPreview({ artifact }: { artifact: DocumentationArtifactResponse }) {
+  let contract: OpenApiDocument;
+  try { contract = JSON.parse(sourceFor(artifact)) as OpenApiDocument; }
+  catch { return <DocumentTextPreview artifact={artifact} />; }
+  const endpoints = Object.entries(contract.paths ?? {}).flatMap(([path, pathItem]) => Object.entries(pathItem)
+    .filter(([method]) => ["get", "post", "put", "patch", "delete", "head", "options"].includes(method.toLowerCase()))
+    .map(([method, operation]) => ({ path, method, operation })));
+  const schemas = Object.entries(contract.components?.schemas ?? {});
+
+  return (
+    <div className={`${styles.documentBody} ${styles.apiDocument}`} aria-label="OpenAPI contract preview">
+      <div className={styles.documentIdentity}><span>Contract reference</span><span>OpenAPI {contract.openapi ?? "-"}</span></div>
+      <h2 className={styles.documentTitle}>{contract.info?.title ?? artifact.title}</h2>
+      <p className={styles.documentParagraph}>{contract.info?.description ?? "Generated API contract for review before implementation."}</p>
+      <dl className={styles.apiStats}>
+        <div><dt>Version</dt><dd>{contract.info?.version ?? "Not declared"}</dd></div>
+        <div><dt>Endpoints</dt><dd>{endpoints.length}</dd></div>
+        <div><dt>Schemas</dt><dd>{schemas.length}</dd></div>
+        <div><dt>Authentication</dt><dd>Not declared</dd></div>
+      </dl>
+      <h3 className={styles.apiSectionHeading}>Endpoints</h3>
+      <div className={styles.apiEndpointList}>{endpoints.map(({ path, method, operation }) => (
+        <section className={styles.apiEndpoint} key={`${method}-${path}`}>
+          <div><span>{method.toUpperCase()}</span><strong>{path}</strong></div>
+          <p>{operation.summary ?? "No summary provided."}</p>
+          <footer><span>{operation.operationId ?? "Operation ID not declared"}</span><span>{operation["x-velocira-requirement-id"] ?? "No linked requirement"}</span></footer>
+        </section>
+      ))}</div>
+      {schemas.length > 0 && <><h3 className={styles.apiSectionHeading}>Schemas</h3><div className={styles.apiSchemaList}>{schemas.map(([name, schema]) => <div key={name}><strong>{name}</strong><span>{schema.type ?? "object"}</span><small>{schema.required?.join(", ") || "No required fields declared"}</small></div>)}</div></>}
+    </div>
+  );
+}
+
+function TraceabilityPreview({ traces }: { traces: DocumentationTraceResponse[] }) {
+  return (
+    <div className={`${styles.documentBody} ${styles.traceabilityDocument}`} aria-label="Traceability matrix preview">
+      <div className={styles.documentIdentity}><span>Traceability matrix</span><span>{traces.length} links</span></div>
+      <h2 className={styles.documentTitle}>Delivery trace</h2>
+      <p className={styles.documentParagraph}>Each row follows one reviewed requirement through design, implementation, and acceptance evidence.</p>
+      <div className={styles.traceTableWrap}><table className={styles.traceTable}>
+        <thead><tr><th>Requirement</th><th>Use case</th><th>Entity</th><th>API operation</th><th>Acceptance</th></tr></thead>
+        <tbody>{traces.map((trace) => <tr key={trace.requirementId}>
+          <td><strong>{trace.requirementId}</strong><small>{trace.sourceKind}</small></td>
+          <td>{trace.useCaseId || "-"}</td><td>{trace.entityId || "-"}</td><td>{trace.apiOperationId || "-"}</td><td>{trace.acceptanceCriterionId}</td>
+        </tr>)}</tbody>
+      </table></div>
+      {traces.length === 0 && <p className={styles.noTrace}>No traceability links were recorded for this package.</p>}
     </div>
   );
 }
@@ -220,7 +285,7 @@ export default function DocumentationPackageWorkspace({ projectId, generationUnl
     setActiveAction("export"); setError(null); setNotice(null);
     try {
       const result = await documentationPackageApi.export(projectId, selectedPackage.id, {
-        format, template: "TECHNICAL", theme: "COMMAND", layout: "STANDARD",
+        format, template: "MINIMAL", theme: "MONOCHROME", layout: "STANDARD",
       });
       if (!result.success || !result.data) { setError(result.message); return; }
       setExports((current) => [result.data!, ...current]);
@@ -287,7 +352,9 @@ export default function DocumentationPackageWorkspace({ projectId, generationUnl
             <div className={styles.viewerCanvas}>
               {selectedArtifact && isDiagram(selectedArtifact.type) ? (
                 selectedDiagramUrl ? <img src={selectedDiagramUrl} alt={`${selectedDetail?.label} generated from this package`} className={styles.diagramPreview} /> : <div className={styles.previewLoading}><Loader2 className={styles.spin} /> Rendering package diagram…</div>
-              ) : selectedArtifact ? <DocumentTextPreview artifact={selectedArtifact} /> : null}
+              ) : selectedArtifact?.type === "OPENAPI" ? <OpenApiPreview artifact={selectedArtifact} />
+                : selectedArtifact?.type === "TRACEABILITY" ? <TraceabilityPreview traces={selectedPackage.traceLinks} />
+                  : selectedArtifact ? <DocumentTextPreview artifact={selectedArtifact} /> : null}
             </div>
             <div className={styles.viewerFooter}><span>{isDiagram(selectedArtifact?.type ?? "") ? "SVG generated from the reviewed package snapshot" : "Preview rendered from the same reviewed source snapshot used by package exports"}</span><div><button type="button" aria-label="Previous trace link" onClick={() => setSelectedTraceIndex((index) => Math.max(0, index - 1))} disabled={selectedTraceIndex === 0}><ChevronLeft /></button><span>{Math.min(selectedTraceIndex + 1, Math.max(1, selectedPackage.traceLinks.length))} / {selectedPackage.traceLinks.length || 1}</span><button type="button" aria-label="Next trace link" onClick={() => setSelectedTraceIndex((index) => Math.min(Math.max(0, selectedPackage.traceLinks.length - 1), index + 1))} disabled={selectedTraceIndex >= selectedPackage.traceLinks.length - 1}><ChevronRight /></button></div></div>
           </article>

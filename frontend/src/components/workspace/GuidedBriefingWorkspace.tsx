@@ -100,13 +100,17 @@ export default function GuidedBriefingWorkspace({
           </div>
         </section>
 
-        <section className="grid gap-4 xl:grid-cols-[1.35fr_.65fr]" aria-label="Project health and lifecycle">
-          <ProjectHealthPanel project={project} />
+        <section className="briefing-lifecycle" aria-label="Project lifecycle">
           <ProjectLifecycle status={project.status} />
         </section>
 
-        <section aria-label="Answer discovery questions">
-          <InterviewPanel projectId={project.id} onUpdated={handleProjectUpdated} />
+        <section className="briefing-workbench" aria-label="Discovery workspace">
+          <div aria-label="Answer discovery questions">
+            <InterviewPanel projectId={project.id} onUpdated={handleProjectUpdated} />
+          </div>
+          <aside className="briefing-workbench__health" aria-label="Project health">
+            <ProjectHealthPanel project={project} />
+          </aside>
         </section>
 
         <section className="space-y-6 border-t border-border pt-8" aria-label="Generate project documents">
