@@ -33,8 +33,12 @@ import org.apache.poi.xwpf.usermodel.XWPFTableCell;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPageMar;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPageSz;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSectPr;
-import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTBackground;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTTblGrid;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTTblPr;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTTblWidth;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.STFldCharType;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.STTblLayoutType;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.STTblWidth;
 import org.springframework.stereotype.Component;
 
 import javax.imageio.ImageIO;
@@ -180,8 +184,8 @@ public class DocumentationExportRenderer {
             composer.diagram("Use case map", diagramPng(snapshot.canonicalModel(), DiagramKind.USE_CASES, style));
             composer.section("Use cases", snapshot.artifact(DocumentationArtifactType.USE_CASES).content());
             composer.diagram("Entity relationship diagram", diagramPng(snapshot.canonicalModel(), DiagramKind.ERD, style));
-            composer.section("Traceability", snapshot.artifact(DocumentationArtifactType.TRACEABILITY).sourceContent());
-            composer.section("OpenAPI contract", "```json\n" + snapshot.artifact(DocumentationArtifactType.OPENAPI).sourceContent() + "\n```");
+            composer.traceability(snapshot.canonicalModel());
+            composer.openApi(snapshot.artifact(DocumentationArtifactType.OPENAPI).sourceContent());
             composer.close();
             document.save(output);
             return output.toByteArray();
@@ -200,8 +204,8 @@ public class DocumentationExportRenderer {
             addDocxDiagram(document, "Use case map", diagramPng(snapshot.canonicalModel(), DiagramKind.USE_CASES, style), theme);
             addDocxSection(document, "Use cases", snapshot.artifact(DocumentationArtifactType.USE_CASES).content(), style, theme);
             addDocxDiagram(document, "Entity relationship diagram", diagramPng(snapshot.canonicalModel(), DiagramKind.ERD, style), theme);
-            addDocxSection(document, "Traceability", snapshot.artifact(DocumentationArtifactType.TRACEABILITY).sourceContent(), style, theme);
-            addDocxSection(document, "OpenAPI contract", "```json\n" + snapshot.artifact(DocumentationArtifactType.OPENAPI).sourceContent() + "\n```", style, theme);
+            addDocxTraceability(document, snapshot.canonicalModel(), theme);
+            addDocxOpenApi(document, snapshot.artifact(DocumentationArtifactType.OPENAPI).sourceContent(), theme);
             document.write(output);
             return output.toByteArray();
         }
@@ -215,27 +219,21 @@ public class DocumentationExportRenderer {
         pageSize.setW(BigInteger.valueOf(12_240));
         pageSize.setH(BigInteger.valueOf(15_840));
         CTPageMar margins = section.isSetPgMar() ? section.getPgMar() : section.addNewPgMar();
-        margins.setTop(BigInteger.valueOf(1_080));
-        margins.setRight(BigInteger.valueOf(1_080));
-        margins.setBottom(BigInteger.valueOf(1_080));
-        margins.setLeft(BigInteger.valueOf(1_080));
-        margins.setHeader(BigInteger.valueOf(720));
-        margins.setFooter(BigInteger.valueOf(720));
+        margins.setTop(BigInteger.valueOf(1_440));
+        margins.setRight(BigInteger.valueOf(1_440));
+        margins.setBottom(BigInteger.valueOf(1_440));
+        margins.setLeft(BigInteger.valueOf(1_440));
+        margins.setHeader(BigInteger.valueOf(710));
+        margins.setFooter(BigInteger.valueOf(710));
         margins.setGutter(BigInteger.ZERO);
     }
 
     private void configureDocxFurniture(XWPFDocument document, PackageSnapshot snapshot, DocumentationExportStyle style, Theme theme) {
-        if (style.theme() == DocumentationExportTheme.COMMAND) {
-            CTBackground background = document.getDocument().isSetBackground()
-                    ? document.getDocument().getBackground()
-                    : document.getDocument().addNewBackground();
-            background.setColor(theme.canvasHex());
-        }
         XWPFHeader header = document.createHeader(HeaderFooterType.DEFAULT);
         XWPFParagraph headerParagraph = header.createParagraph();
         headerParagraph.setSpacingAfter(0);
         XWPFRun headerRun = headerParagraph.createRun();
-        headerRun.setText("VELOCIRA  |  " + snapshot.projectName() + "  |  " + style.template().name());
+        headerRun.setText("VELOCIRA  /  " + snapshot.projectName());
         headerRun.setFontFamily("Calibri");
         headerRun.setFontSize(8);
         headerRun.setColor(theme.mutedHex());
@@ -280,11 +278,13 @@ public class DocumentationExportRenderer {
         addMetadataRow(metadata.getRow(1), "Source SRS", "v" + snapshot.srsVersionNumber(), theme);
         addMetadataRow(metadata.getRow(2), "Presentation", style.template() + " / " + style.theme() + " / " + style.layout(), theme);
         addMetadataRow(metadata.getRow(3), "Purpose", template.callout(), theme);
+        configureDocxTable(metadata, 1760, 7600);
 
         XWPFTable callout = document.createTable(1, 1);
         callout.setWidth("9360");
         callout.getRow(0).getCell(0).setColor(theme.softHex());
         setDocxCell(callout.getRow(0).getCell(0), "REVIEW PACKAGE  |  This package keeps requirements, diagrams, APIs, and traceability connected to the same reviewed project snapshot.", 10, theme.inkHex(), false);
+        configureDocxTable(callout, 9360);
         document.createParagraph().createRun().addBreak(BreakType.PAGE);
     }
 
@@ -299,7 +299,7 @@ public class DocumentationExportRenderer {
 
     private void setDocxCell(XWPFTableCell cell, String text, int size, String color, boolean bold) {
         XWPFParagraph paragraph = cell.getParagraphArray(0);
-        paragraph.setSpacingAfter(40);
+        paragraph.setSpacingAfter(0);
         XWPFRun run = paragraph.createRun();
         run.setText(text);
         run.setFontFamily("Calibri");
@@ -355,6 +355,192 @@ public class DocumentationExportRenderer {
         }
     }
 
+    private void addDocxTraceability(XWPFDocument document, JsonNode canonical, Theme theme) {
+        addDocxPageBreak(document);
+        addDocxBand(document, "TRACEABILITY", theme.primaryHex());
+        XWPFParagraph heading = document.createParagraph();
+        heading.setSpacingBefore(180);
+        heading.setSpacingAfter(80);
+        addDocxText(heading, "Traceability matrix", 17, theme.inkHex(), true);
+        XWPFParagraph introduction = document.createParagraph();
+        introduction.setSpacingAfter(140);
+        addDocxText(introduction, "Each generated requirement is connected to the downstream design, API, and acceptance evidence used for review.", 10, theme.mutedHex(), false);
+
+        int[] widths = {1320, 1180, 1140, 2160, 1760, 1800};
+        XWPFTable table = document.createTable(1, widths.length);
+        String[] headers = {"REQUIREMENT", "USE CASE", "ENTITY", "API OPERATION", "ACCEPTANCE", "SOURCE"};
+        for (int index = 0; index < headers.length; index++) {
+            XWPFTableCell cell = table.getRow(0).getCell(index);
+            cell.setColor("E7EBEF");
+            setDocxCell(cell, headers[index], 7, theme.mutedHex(), true);
+        }
+        table.getRow(0).setRepeatHeader(true);
+        for (JsonNode requirement : canonical.path("requirements")) {
+            org.apache.poi.xwpf.usermodel.XWPFTableRow row = table.createRow();
+            setDocxCell(row.getCell(0), requirement.path("id").asText("Not recorded"), 8, theme.inkHex(), true);
+            setDocxCell(row.getCell(1), valueOrDash(requirement.path("useCaseId").asText()), 8, theme.inkHex(), false);
+            setDocxCell(row.getCell(2), valueOrDash(requirement.path("entityId").asText()), 8, theme.inkHex(), false);
+            setDocxCell(row.getCell(3), valueOrDash(requirement.path("apiOperationId").asText()), 8, theme.inkHex(), false);
+            setDocxCell(row.getCell(4), firstAcceptanceId(requirement), 8, theme.inkHex(), false);
+            setDocxCell(row.getCell(5), valueOrDash(requirement.path("sourceKind").asText()), 8, theme.inkHex(), false);
+        }
+        configureDocxTable(table, widths);
+
+        XWPFParagraph readingGuide = document.createParagraph();
+        readingGuide.setSpacingBefore(120);
+        readingGuide.setSpacingAfter(0);
+        addDocxText(readingGuide, "Reading the matrix: requirement -> use case -> entity -> API operation -> acceptance criterion.", 8, theme.mutedHex(), false);
+    }
+
+    private void addDocxOpenApi(XWPFDocument document, String source, Theme theme) {
+        addDocxPageBreak(document);
+        addDocxBand(document, "OPENAPI CONTRACT", theme.primaryHex());
+        XWPFParagraph heading = document.createParagraph();
+        heading.setSpacingBefore(180);
+        heading.setSpacingAfter(80);
+        addDocxText(heading, "OpenAPI contract", 17, theme.inkHex(), true);
+        try {
+            JsonNode contract = new ObjectMapper().readTree(source);
+            JsonNode info = contract.path("info");
+            XWPFParagraph introduction = document.createParagraph();
+            introduction.setSpacingAfter(120);
+            addDocxText(introduction, info.path("description").asText("Generated API contract."), 10, theme.mutedHex(), false);
+
+            XWPFTable overview = document.createTable(2, 6);
+            String[][] overviewRows = {
+                    {"OPENAPI", contract.path("openapi").asText("Not declared"), "ENDPOINTS", String.valueOf(contract.path("paths").size()), "SCHEMAS", String.valueOf(contract.path("components").path("schemas").size())},
+                    {"VERSION", info.path("version").asText("Not declared"), "AUTHENTICATION", contract.path("components").path("securitySchemes").isMissingNode() ? "Not declared" : "Declared", "STATUS", "Generated review contract"}
+            };
+            for (int rowIndex = 0; rowIndex < overviewRows.length; rowIndex++) {
+                org.apache.poi.xwpf.usermodel.XWPFTableRow row = overview.getRow(rowIndex);
+                for (int cellIndex = 0; cellIndex < overviewRows[rowIndex].length; cellIndex++) {
+                    boolean labelCell = cellIndex % 2 == 0;
+                    row.getCell(cellIndex).setColor(labelCell ? "F4F6F8" : "FFFFFF");
+                    setDocxCell(row.getCell(cellIndex), overviewRows[rowIndex][cellIndex], labelCell ? 7 : 8, labelCell ? theme.mutedHex() : theme.inkHex(), labelCell);
+                }
+            }
+            configureDocxTable(overview, 900, 2220, 1050, 2220, 900, 2070);
+
+            addDocxSubheading(document, "Endpoints", theme);
+            contract.path("paths").properties().forEach(path -> path.getValue().properties().forEach(operation ->
+                    addDocxEndpoint(document, operation.getKey().toUpperCase(Locale.ROOT), path.getKey(), operation.getValue(), theme)));
+
+            JsonNode schemas = contract.path("components").path("schemas");
+            if (schemas.isObject() && !schemas.isEmpty()) {
+                addDocxSubheading(document, "Schemas", theme);
+                XWPFTable schemaTable = document.createTable(1, 3);
+                String[] headers = {"SCHEMA", "TYPE", "REQUIRED FIELDS"};
+                for (int index = 0; index < headers.length; index++) {
+                    schemaTable.getRow(0).getCell(index).setColor("E7EBEF");
+                    setDocxCell(schemaTable.getRow(0).getCell(index), headers[index], 7, theme.mutedHex(), true);
+                }
+                schemaTable.getRow(0).setRepeatHeader(true);
+                schemas.properties().forEach(schema -> {
+                    org.apache.poi.xwpf.usermodel.XWPFTableRow row = schemaTable.createRow();
+                    setDocxCell(row.getCell(0), schema.getKey(), 8, theme.inkHex(), true);
+                    setDocxCell(row.getCell(1), schema.getValue().path("type").asText("object"), 8, theme.inkHex(), false);
+                    setDocxCell(row.getCell(2), jsonValues(schema.getValue().path("required")), 8, theme.inkHex(), false);
+                });
+                configureDocxTable(schemaTable, 2700, 1500, 5160);
+            }
+        } catch (IOException exception) {
+            XWPFParagraph fallback = document.createParagraph();
+            fallback.setSpacingAfter(80);
+            addDocxText(fallback, "The generated contract could not be parsed for the structured layout. The source contract follows.", 10, theme.mutedHex(), false);
+            addDocxSection(document, "OpenAPI source", "```json\n" + source + "\n```", DocumentationExportStyle.defaults(), theme);
+        }
+    }
+
+    private void addDocxEndpoint(XWPFDocument document, String method, String path, JsonNode operation, Theme theme) {
+        XWPFTable endpoint = document.createTable(1, 2);
+        endpoint.getRow(0).getCell(0).setColor("E7EBEF");
+        endpoint.getRow(0).getCell(1).setColor("FFFFFF");
+        setDocxCell(endpoint.getRow(0).getCell(0), method, 8, theme.inkHex(), true);
+        setDocxCell(endpoint.getRow(0).getCell(1), path, 9, theme.inkHex(), true);
+        configureDocxTable(endpoint, 1080, 8280);
+
+        XWPFParagraph summary = document.createParagraph();
+        summary.setSpacingBefore(50);
+        summary.setSpacingAfter(30);
+        addDocxText(summary, operation.path("summary").asText("No summary provided."), 9, theme.inkHex(), false);
+        addDocxKeyValue(document, "Operation ID", operation.path("operationId").asText("Not declared"), theme);
+        addDocxKeyValue(document, "Requirement", operation.path("x-velocira-requirement-id").asText("Not declared"), theme);
+        addDocxKeyValue(document, "Responses", responseSummary(operation.path("responses")), theme);
+        document.createParagraph().setSpacingAfter(70);
+    }
+
+    private void addDocxSubheading(XWPFDocument document, String value, Theme theme) {
+        XWPFParagraph heading = document.createParagraph();
+        heading.setSpacingBefore(150);
+        heading.setSpacingAfter(80);
+        addDocxText(heading, value, 12, theme.inkHex(), true);
+    }
+
+    private void addDocxKeyValue(XWPFDocument document, String label, String value, Theme theme) {
+        XWPFParagraph paragraph = document.createParagraph();
+        paragraph.setSpacingAfter(20);
+        addDocxText(paragraph, label + ": ", 8, theme.mutedHex(), true);
+        addDocxText(paragraph, value, 8, theme.inkHex(), false);
+    }
+
+    private void configureDocxTable(XWPFTable table, int... widths) {
+        table.setWidth("9360");
+        table.setCellMargins(80, 120, 80, 120);
+        org.openxmlformats.schemas.wordprocessingml.x2006.main.CTTbl tableXml = table.getCTTbl();
+        CTTblPr properties = tableXml.getTblPr();
+        if (properties == null) properties = tableXml.addNewTblPr();
+        CTTblWidth tableWidth = properties.getTblW();
+        if (tableWidth == null) tableWidth = properties.addNewTblW();
+        tableWidth.setW(BigInteger.valueOf(9360));
+        tableWidth.setType(STTblWidth.DXA);
+        CTTblWidth tableIndent = properties.getTblInd();
+        if (tableIndent == null) tableIndent = properties.addNewTblInd();
+        tableIndent.setW(BigInteger.valueOf(120));
+        tableIndent.setType(STTblWidth.DXA);
+        if (properties.getTblLayout() == null) properties.addNewTblLayout();
+        properties.getTblLayout().setType(STTblLayoutType.FIXED);
+        CTTblGrid grid = tableXml.getTblGrid();
+        if (grid == null) grid = tableXml.addNewTblGrid();
+        while (grid.sizeOfGridColArray() > widths.length) grid.removeGridCol(widths.length);
+        for (int index = 0; index < widths.length; index++) {
+            if (index >= grid.sizeOfGridColArray()) grid.addNewGridCol();
+            grid.getGridColArray(index).setW(BigInteger.valueOf(widths[index]));
+        }
+        table.setInsideHBorder(XWPFTable.XWPFBorderType.SINGLE, 4, 0, "D6DAE1");
+        table.setInsideVBorder(XWPFTable.XWPFBorderType.SINGLE, 4, 0, "E5E7EB");
+        table.setTopBorder(XWPFTable.XWPFBorderType.SINGLE, 4, 0, "D6DAE1");
+        table.setBottomBorder(XWPFTable.XWPFBorderType.SINGLE, 4, 0, "D6DAE1");
+        table.setLeftBorder(XWPFTable.XWPFBorderType.SINGLE, 4, 0, "D6DAE1");
+        table.setRightBorder(XWPFTable.XWPFBorderType.SINGLE, 4, 0, "D6DAE1");
+        for (org.apache.poi.xwpf.usermodel.XWPFTableRow row : table.getRows()) {
+            for (int index = 0; index < Math.min(widths.length, row.getTableCells().size()); index++) {
+                row.getCell(index).setWidth(String.valueOf(widths[index]));
+                row.getCell(index).setVerticalAlignment(XWPFTableCell.XWPFVertAlign.CENTER);
+            }
+        }
+    }
+
+    private String firstAcceptanceId(JsonNode requirement) {
+        JsonNode criteria = requirement.path("acceptanceCriteria");
+        return criteria.isArray() && !criteria.isEmpty() ? criteria.get(0).path("id").asText("Not recorded") : "Not recorded";
+    }
+
+    private String valueOrDash(String value) {
+        return value == null || value.isBlank() ? "-" : value;
+    }
+
+    private String jsonValues(JsonNode values) {
+        List<String> items = new ArrayList<>();
+        if (values.isArray()) values.forEach(value -> items.add(value.asText()));
+        return items.isEmpty() ? "None declared" : String.join(", ", items);
+    }
+
+    private String responseSummary(JsonNode responses) {
+        List<String> items = new ArrayList<>();
+        responses.properties().forEach(response -> items.add(response.getKey() + " " + response.getValue().path("description").asText("")));
+        return items.isEmpty() ? "None declared" : String.join("; ", items);
+    }
+
     private void addDocxDiagram(XWPFDocument document, String title, byte[] png, Theme theme) throws IOException {
         addDocxPageBreak(document);
         addDocxBand(document, title.toUpperCase(Locale.ROOT), theme.primaryHex());
@@ -389,16 +575,14 @@ public class DocumentationExportRenderer {
     }
 
     private void addDocxBand(XWPFDocument document, String label, String fill) {
-        XWPFTable band = document.createTable(1, 1);
-        band.setWidth("9360");
-        XWPFTableCell cell = band.getRow(0).getCell(0);
-        cell.setColor(fill);
-        setDocxCell(cell, label, 8, "FFFFFF", true);
+        XWPFParagraph band = document.createParagraph();
+        band.setSpacingAfter(0);
+        addDocxText(band, label.replace('_', ' '), 8, "64748B", true);
     }
 
     private byte[] diagramPng(JsonNode canonical, DiagramKind kind, DocumentationExportStyle style) throws IOException {
         Theme theme = Theme.from(style.theme());
-        int width = 1100;
+        int width = 1200;
         List<String> labels = new ArrayList<>();
         if (kind == DiagramKind.ERD) {
             for (JsonNode entity : canonical.path("entities")) labels.add(entity.path("name").asText("Entity"));
@@ -408,8 +592,9 @@ public class DocumentationExportRenderer {
             }
         }
         if (labels.isEmpty()) labels.add(kind == DiagramKind.ERD ? "No entities recorded" : "No functional use cases recorded");
-        int rows = Math.min(labels.size(), 6);
-        int height = Math.max(420, 140 + rows * 100);
+        int items = Math.min(labels.size(), 8);
+        int rows = kind == DiagramKind.ERD ? (int) Math.ceil(items / 2.0) : items;
+        int height = Math.max(420, 180 + rows * (kind == DiagramKind.ERD ? 120 : 82));
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         Graphics2D graphics = image.createGraphics();
         try {
@@ -417,40 +602,64 @@ public class DocumentationExportRenderer {
             graphics.setColor(theme.canvas());
             graphics.fillRect(0, 0, width, height);
             graphics.setColor(theme.primary());
-            graphics.fillRect(0, 0, width, 18);
+            graphics.fillRect(0, 0, width, 5);
             graphics.setColor(theme.ink());
-            graphics.setFont(new Font("Arial", Font.BOLD, 28));
-            graphics.drawString(kind == DiagramKind.ERD ? "Entity relationship diagram" : "Use case map", 56, 66);
-            graphics.setFont(new Font("Arial", Font.PLAIN, 15));
+            graphics.setFont(new Font("Arial", Font.BOLD, 26));
+            graphics.drawString(kind == DiagramKind.ERD ? "Entity model" : "Use case map", 56, 58);
+            graphics.setFont(new Font("Arial", Font.PLAIN, 14));
             graphics.setColor(theme.muted());
-            graphics.drawString("Visual export generated from the reviewed package snapshot", 56, 94);
-            graphics.setStroke(new BasicStroke(3f));
-            for (int index = 0; index < rows; index++) {
-                int y = 132 + index * 90;
-                graphics.setColor(theme.soft());
-                if (kind == DiagramKind.ERD) {
-                    graphics.fillRoundRect(74, y, 330, 56, 12, 12);
-                    graphics.setColor(theme.primary());
-                    graphics.drawRoundRect(74, y, 330, 56, 12, 12);
-                } else {
-                    graphics.fillOval(74, y, 410, 56);
-                    graphics.setColor(theme.primary());
-                    graphics.drawOval(74, y, 410, 56);
-                }
+            graphics.drawString(kind == DiagramKind.ERD
+                    ? "Entities inferred from the reviewed requirements. Relationship lines are omitted until relationship evidence is available."
+                    : "Actor-to-capability links derived from the reviewed functional requirements.", 56, 84);
+            graphics.setStroke(new BasicStroke(2f));
+
+            if (kind == DiagramKind.USE_CASES) {
+                int boundaryX = 310;
+                int boundaryY = 118;
+                int boundaryHeight = Math.max(120, items * 82 + 36);
+                graphics.setColor(new Color(226, 232, 240));
+                graphics.drawRoundRect(boundaryX, boundaryY, 820, boundaryHeight, 14, 14);
+                graphics.setColor(theme.muted());
+                graphics.setFont(new Font("Arial", Font.BOLD, 12));
+                graphics.drawString("SYSTEM CAPABILITIES", boundaryX + 22, boundaryY + 24);
                 graphics.setColor(theme.ink());
-                graphics.setFont(new Font("Arial", Font.BOLD, 16));
-                graphics.drawString(ellipsize(labels.get(index), 34), 96, y + 34);
-                graphics.setColor(theme.primary());
-                graphics.drawLine(kind == DiagramKind.ERD ? 432 : 512, y + 28, 730, y + 28);
-                graphics.drawLine(730, y + 28, 710, y + 18);
-                graphics.drawLine(730, y + 28, 710, y + 38);
-                graphics.setColor(theme.soft());
-                graphics.fillRoundRect(758, y, 260, 56, 12, 12);
-                graphics.setColor(theme.primary());
-                graphics.drawRoundRect(758, y, 260, 56, 12, 12);
-                graphics.setColor(theme.ink());
+                graphics.fillOval(126, boundaryY + boundaryHeight / 2 - 48, 26, 26);
+                graphics.drawLine(139, boundaryY + boundaryHeight / 2 - 22, 139, boundaryY + boundaryHeight / 2 + 35);
+                graphics.drawLine(114, boundaryY + boundaryHeight / 2, 164, boundaryY + boundaryHeight / 2);
+                graphics.drawLine(139, boundaryY + boundaryHeight / 2 + 35, 114, boundaryY + boundaryHeight / 2 + 68);
+                graphics.drawLine(139, boundaryY + boundaryHeight / 2 + 35, 164, boundaryY + boundaryHeight / 2 + 68);
+                String actor = canonical.path("actors").isEmpty() ? "Project user" : canonical.path("actors").get(0).path("name").asText("Project user");
                 graphics.setFont(new Font("Arial", Font.PLAIN, 14));
-                graphics.drawString(kind == DiagramKind.ERD ? "Traceable schema" : "Requirement trace", 786, y + 34);
+                drawCentered(graphics, ellipsize(actor, 22), 139, boundaryY + boundaryHeight / 2 + 94);
+                for (int index = 0; index < items; index++) {
+                    int y = boundaryY + 40 + index * 82;
+                    graphics.setColor(theme.primary());
+                    graphics.drawLine(176, y + 25, 422, y + 25);
+                    graphics.setColor(theme.soft());
+                    graphics.fillRoundRect(422, y, 610, 50, 10, 10);
+                    graphics.setColor(theme.primary());
+                    graphics.drawRoundRect(422, y, 610, 50, 10, 10);
+                    graphics.setColor(theme.ink());
+                    graphics.setFont(new Font("Arial", Font.BOLD, 15));
+                    graphics.drawString(ellipsize(labels.get(index), 56), 446, y + 31);
+                }
+            } else {
+                for (int index = 0; index < items; index++) {
+                    int column = index % 2;
+                    int row = index / 2;
+                    int x = column == 0 ? 70 : 635;
+                    int y = 124 + row * 120;
+                    graphics.setColor(theme.soft());
+                    graphics.fillRoundRect(x, y, 495, 86, 10, 10);
+                    graphics.setColor(theme.primary());
+                    graphics.drawRoundRect(x, y, 495, 86, 10, 10);
+                    graphics.setColor(theme.ink());
+                    graphics.setFont(new Font("Arial", Font.BOLD, 17));
+                    graphics.drawString(ellipsize(labels.get(index), 39), x + 22, y + 34);
+                    graphics.setColor(theme.muted());
+                    graphics.setFont(new Font("Arial", Font.PLAIN, 13));
+                    graphics.drawString("id  /  uuid  /  primary key", x + 22, y + 61);
+                }
             }
         } finally {
             graphics.dispose();
@@ -461,47 +670,61 @@ public class DocumentationExportRenderer {
         }
     }
 
+    private void drawCentered(Graphics2D graphics, String text, int centerX, int baseline) {
+        int width = graphics.getFontMetrics().stringWidth(text);
+        graphics.drawString(text, centerX - width / 2, baseline);
+    }
+
     private String useCaseSvg(JsonNode canonical, Theme theme, DocumentationExportTemplate template) {
-        StringBuilder lines = new StringBuilder();
-        int y = 112;
+        StringBuilder nodes = new StringBuilder();
+        int y = 154;
         int count = 0;
         for (JsonNode requirement : canonical.path("requirements")) {
             if (!"FUNCTIONAL".equals(requirement.path("type").asText())) continue;
-            String text = requirement.path("useCaseId").asText("") + " " + requirement.path("id").asText("");
-            lines.append("<ellipse cx=\"370\" cy=\"").append(y).append("\" rx=\"260\" ry=\"31\" fill=\"")
-                    .append(theme.softHex()).append("\" stroke=\"").append(theme.primaryHex()).append("\" stroke-width=\"2\"/>")
-                    .append("<text x=\"132\" y=\"").append(y + 6).append("\" font-family=\"Arial\" font-size=\"14\" fill=\"")
-                    .append(theme.inkHex()).append("\">").append(escapeXml(text.trim())).append("</text>");
-            y += 84;
+            String text = requirement.path("useCaseId").asText("") + "  " + requirement.path("id").asText("");
+            nodes.append("<line x1=\"202\" y1=\"").append(y + 24).append("\" x2=\"422\" y2=\"").append(y + 24)
+                    .append("\" stroke=\"").append(theme.primaryHex()).append("\" stroke-width=\"1.5\"/>")
+                    .append("<rect x=\"422\" y=\"").append(y).append("\" width=\"590\" height=\"48\" rx=\"9\" fill=\"")
+                    .append(theme.softHex()).append("\" stroke=\"").append(theme.primaryHex()).append("\" stroke-width=\"1.5\"/>")
+                    .append("<text x=\"446\" y=\"").append(y + 30).append("\" font-family=\"Arial\" font-size=\"14\" font-weight=\"bold\" fill=\"")
+                    .append(theme.inkHex()).append("\">").append(escapeXml(ellipsize(text.trim(), 56))).append("</text>");
+            y += 76;
             count++;
         }
-        if (count == 0) lines.append("<text x=\"90\" y=\"132\" font-family=\"Arial\" font-size=\"14\" fill=\"").append(theme.mutedHex()).append("\">No functional use cases were recorded.</text>");
-        int height = Math.max(210, y + 52);
-        return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"780\" height=\"" + height + "\" viewBox=\"0 0 780 " + height + "\">"
-                + "<rect width=\"100%\" height=\"100%\" fill=\"#" + theme.canvasHex() + "\"/><rect width=\"100%\" height=\"18\" fill=\"" + theme.primaryHex() + "\"/>"
-                + "<text x=\"42\" y=\"62\" font-family=\"Arial\" font-size=\"24\" font-weight=\"bold\" fill=\"" + theme.inkHex() + "\">Use case map</text>"
-                + "<text x=\"42\" y=\"87\" font-family=\"Arial\" font-size=\"13\" fill=\"" + theme.mutedHex() + "\">" + escapeXml(template.name().toLowerCase(Locale.ROOT)) + " documentation presentation</text>" + lines + "</svg>";
+        if (count == 0) nodes.append("<text x=\"422\" y=\"175\" font-family=\"Arial\" font-size=\"14\" fill=\"").append(theme.mutedHex()).append("\">No functional use cases were recorded.</text>");
+        int height = Math.max(330, y + 46);
+        String actor = canonical.path("actors").isEmpty() ? "Project user" : canonical.path("actors").get(0).path("name").asText("Project user");
+        return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1100\" height=\"" + height + "\" viewBox=\"0 0 1100 " + height + "\">"
+                + "<rect width=\"100%\" height=\"100%\" fill=\"#" + theme.canvasHex() + "\"/><rect width=\"100%\" height=\"5\" fill=\"" + theme.primaryHex() + "\"/>"
+                + "<text x=\"56\" y=\"58\" font-family=\"Arial\" font-size=\"26\" font-weight=\"bold\" fill=\"" + theme.inkHex() + "\">Use case map</text>"
+                + "<text x=\"56\" y=\"84\" font-family=\"Arial\" font-size=\"14\" fill=\"" + theme.mutedHex() + "\">Actor-to-capability links derived from reviewed functional requirements.</text>"
+                + "<rect x=\"310\" y=\"118\" width=\"760\" height=\"" + Math.max(116, count * 76 + 36) + "\" rx=\"12\" fill=\"none\" stroke=\"#CBD5E1\" stroke-width=\"1.5\"/>"
+                + "<text x=\"332\" y=\"142\" font-family=\"Arial\" font-size=\"11\" font-weight=\"bold\" fill=\"" + theme.mutedHex() + "\">SYSTEM CAPABILITIES</text>"
+                + "<circle cx=\"142\" cy=\"" + (height / 2 - 44) + "\" r=\"13\" fill=\"" + theme.inkHex() + "\"/><path d=\"M142 " + (height / 2 - 29) + " L142 " + (height / 2 + 28) + " M116 " + (height / 2 - 3) + " L168 " + (height / 2 - 3) + " M142 " + (height / 2 + 28) + " L116 " + (height / 2 + 60) + " M142 " + (height / 2 + 28) + " L168 " + (height / 2 + 60) + "\" stroke=\"" + theme.inkHex() + "\" stroke-width=\"3\" fill=\"none\"/>"
+                + "<text x=\"142\" y=\"" + (height / 2 + 86) + "\" text-anchor=\"middle\" font-family=\"Arial\" font-size=\"13\" fill=\"" + theme.inkHex() + "\">" + escapeXml(ellipsize(actor, 23)) + "</text>" + nodes + "</svg>";
     }
 
     private String erdSvg(JsonNode canonical, Theme theme, DocumentationExportTemplate template) {
         StringBuilder boxes = new StringBuilder();
-        int y = 112;
         int count = 0;
         for (JsonNode entity : canonical.path("entities")) {
-            boxes.append("<rect x=\"52\" y=\"").append(y).append("\" width=\"360\" height=\"68\" rx=\"10\" fill=\"")
+            int column = count % 2;
+            int row = count / 2;
+            int x = column == 0 ? 56 : 548;
+            int y = 124 + row * 112;
+            boxes.append("<rect x=\"").append(x).append("\" y=\"").append(y).append("\" width=\"456\" height=\"82\" rx=\"10\" fill=\"")
                     .append(theme.softHex()).append("\" stroke=\"").append(theme.primaryHex()).append("\" stroke-width=\"2\"/>")
-                    .append("<text x=\"72\" y=\"").append(y + 29).append("\" font-family=\"Arial\" font-size=\"16\" font-weight=\"bold\" fill=\"")
-                    .append(theme.inkHex()).append("\">").append(escapeXml(entity.path("name").asText("Entity"))).append("</text>")
-                    .append("<text x=\"72\" y=\"").append(y + 51).append("\" font-family=\"Arial\" font-size=\"12\" fill=\"").append(theme.mutedHex()).append("\">id: uuid (PK)</text>");
-            y += 92;
+                    .append("<text x=\"").append(x + 22).append("\" y=\"").append(y + 33).append("\" font-family=\"Arial\" font-size=\"16\" font-weight=\"bold\" fill=\"")
+                    .append(theme.inkHex()).append("\">").append(escapeXml(ellipsize(entity.path("name").asText("Entity"), 34))).append("</text>")
+                    .append("<text x=\"").append(x + 22).append("\" y=\"").append(y + 59).append("\" font-family=\"Arial\" font-size=\"12\" fill=\"").append(theme.mutedHex()).append("\">id  /  uuid  /  primary key</text>");
             count++;
         }
-        if (count == 0) boxes.append("<text x=\"52\" y=\"130\" font-family=\"Arial\" font-size=\"14\" fill=\"").append(theme.mutedHex()).append("\">No entities were recorded.</text>");
-        int height = Math.max(210, y + 42);
-        return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"500\" height=\"" + height + "\" viewBox=\"0 0 500 " + height + "\">"
-                + "<rect width=\"100%\" height=\"100%\" fill=\"#" + theme.canvasHex() + "\"/><rect width=\"100%\" height=\"18\" fill=\"" + theme.primaryHex() + "\"/>"
-                + "<text x=\"52\" y=\"62\" font-family=\"Arial\" font-size=\"24\" font-weight=\"bold\" fill=\"" + theme.inkHex() + "\">Entity relationship diagram</text>"
-                + "<text x=\"52\" y=\"87\" font-family=\"Arial\" font-size=\"13\" fill=\"" + theme.mutedHex() + "\">" + escapeXml(template.name().toLowerCase(Locale.ROOT)) + " documentation presentation</text>" + boxes + "</svg>";
+        if (count == 0) boxes.append("<text x=\"56\" y=\"154\" font-family=\"Arial\" font-size=\"14\" fill=\"").append(theme.mutedHex()).append("\">No entities were recorded.</text>");
+        int height = Math.max(300, 166 + ((count + 1) / 2) * 112);
+        return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1060\" height=\"" + height + "\" viewBox=\"0 0 1060 " + height + "\">"
+                + "<rect width=\"100%\" height=\"100%\" fill=\"#" + theme.canvasHex() + "\"/><rect width=\"100%\" height=\"5\" fill=\"" + theme.primaryHex() + "\"/>"
+                + "<text x=\"56\" y=\"58\" font-family=\"Arial\" font-size=\"26\" font-weight=\"bold\" fill=\"" + theme.inkHex() + "\">Entity model</text>"
+                + "<text x=\"56\" y=\"84\" font-family=\"Arial\" font-size=\"14\" fill=\"" + theme.mutedHex() + "\">Entities inferred from reviewed requirements. Relationships appear only when relationship evidence is recorded.</text>" + boxes + "</svg>";
     }
 
     private String openApiYaml(ArtifactSnapshot openApi) {
@@ -590,12 +813,12 @@ public class DocumentationExportRenderer {
     private record Theme(String primaryHex, String softHex, String inkHex, String mutedHex, String canvasHex) {
         static Theme from(DocumentationExportTheme theme) {
             return switch (theme) {
-                case SIGNAL -> new Theme("5B4FE9", "EEEAFE", "1E1B4B", "5F5B78", "FFFFFF");
-                case COMMAND -> new Theme("4EC7B6", "112238", "E7F1F5", "8FA4B5", "07101B");
-                case OCEAN -> new Theme("0E7490", "E0F2FE", "0C4A6E", "4B6470", "FFFFFF");
-                case VIOLET -> new Theme("7C3AED", "F3E8FF", "3B0764", "665078", "FFFFFF");
-                case EMERALD -> new Theme("047857", "D1FAE5", "064E3B", "4B635D", "FFFFFF");
-                case MONOCHROME -> new Theme("475569", "F1F5F9", "1E293B", "64748B", "FFFFFF");
+                case SIGNAL -> new Theme("475569", "F3F5F7", "18212B", "64748B", "FFFFFF");
+                case COMMAND -> new Theme("334155", "F1F5F9", "111827", "64748B", "FFFFFF");
+                case OCEAN -> new Theme("3F6473", "F1F6F8", "172B33", "64748B", "FFFFFF");
+                case VIOLET -> new Theme("5B6070", "F4F5F7", "1F2430", "6B7280", "FFFFFF");
+                case EMERALD -> new Theme("47665E", "F2F6F4", "172820", "64748B", "FFFFFF");
+                case MONOCHROME -> new Theme("475569", "F3F4F6", "111827", "6B7280", "FFFFFF");
             };
         }
 
@@ -690,6 +913,112 @@ public class DocumentationExportRenderer {
                     text(line, code ? regular : regular, code ? 7.5f : 9.4f, code ? theme.muted() : theme.ink(), code ? 10 : 14);
                 }
             }
+        }
+
+        void traceability(JsonNode canonical) throws IOException {
+            newPage("Traceability");
+            text("Traceability matrix", bold, 19, theme.ink(), 26);
+            text("Requirement-to-delivery links from the reviewed package snapshot.", regular, 9.4f, theme.muted(), 22);
+            for (JsonNode requirement : canonical.path("requirements")) {
+                traceCard(requirement);
+            }
+            if (canonical.path("requirements").isEmpty()) {
+                text("No traceability records were generated for this package.", regular, 9.4f, theme.muted(), 16);
+            }
+        }
+
+        void openApi(String source) throws IOException {
+            newPage("OpenAPI contract");
+            text("OpenAPI contract", bold, 19, theme.ink(), 26);
+            try {
+                JsonNode contract = new ObjectMapper().readTree(source);
+                JsonNode info = contract.path("info");
+                text(info.path("title").asText("Generated API"), regular, 10, theme.muted(), 16);
+                apiOverview(contract, info);
+                text("Endpoints", bold, 12, theme.ink(), 22);
+                contract.path("paths").properties().forEach(path -> path.getValue().properties().forEach(operation -> {
+                    try {
+                        endpointCard(operation.getKey().toUpperCase(Locale.ROOT), path.getKey(), operation.getValue());
+                    } catch (IOException exception) {
+                        throw new IllegalStateException(exception);
+                    }
+                }));
+                JsonNode schemas = contract.path("components").path("schemas");
+                if (schemas.isObject() && !schemas.isEmpty()) {
+                    ensure(42, "OpenAPI contract");
+                    text("Schemas", bold, 12, theme.ink(), 20);
+                    schemas.properties().forEach(schema -> {
+                        try {
+                            schemaRow(schema.getKey(), schema.getValue());
+                        } catch (IOException exception) {
+                            throw new IllegalStateException(exception);
+                        }
+                    });
+                }
+            } catch (IllegalStateException exception) {
+                if (exception.getCause() instanceof IOException ioException) throw ioException;
+                throw exception;
+            } catch (IOException exception) {
+                text("The structured contract preview could not be generated. The included OpenAPI source remains authoritative.", regular, 9.4f, theme.muted(), 16);
+            }
+        }
+
+        private void apiOverview(JsonNode contract, JsonNode info) throws IOException {
+            ensure(58, "OpenAPI contract");
+            stream.setNonStrokingColor(theme.soft());
+            stream.addRect(54, y - 48, 504, 42);
+            stream.fill();
+            stream.setNonStrokingColor(theme.muted());
+            writeAt(stream, "OPENAPI " + contract.path("openapi").asText("Not declared"), bold, 8, 66, y - 19);
+            writeAt(stream, "VERSION " + info.path("version").asText("Not declared"), bold, 8, 214, y - 19);
+            writeAt(stream, "ENDPOINTS " + contract.path("paths").size(), bold, 8, 358, y - 19);
+            writeAt(stream, contract.path("components").path("securitySchemes").isMissingNode() ? "AUTH: NOT DECLARED" : "AUTH: DECLARED", regular, 8, 66, y - 35);
+            y -= 62;
+        }
+
+        private void traceCard(JsonNode requirement) throws IOException {
+            ensure(94, "Traceability");
+            stream.setNonStrokingColor(theme.soft());
+            stream.addRect(54, y - 82, 504, 76);
+            stream.fill();
+            stream.setNonStrokingColor(theme.ink());
+            writeAt(stream, pdfText(requirement.path("id").asText("Requirement")), bold, 10, 66, y - 20);
+            stream.setNonStrokingColor(theme.muted());
+            writeAt(stream, "USE CASE  " + pdfText(valueOrDash(requirement.path("useCaseId").asText())), regular, 8, 66, y - 38);
+            writeAt(stream, "ENTITY  " + pdfText(valueOrDash(requirement.path("entityId").asText())), regular, 8, 260, y - 38);
+            writeAt(stream, "API  " + pdfText(ellipsize(valueOrDash(requirement.path("apiOperationId").asText()), 31)), regular, 8, 66, y - 55);
+            writeAt(stream, "ACCEPTANCE  " + pdfText(ellipsize(firstAcceptanceId(requirement), 33)), regular, 8, 260, y - 55);
+            writeAt(stream, "SOURCE  " + pdfText(valueOrDash(requirement.path("sourceKind").asText())), regular, 8, 66, y - 70);
+            y -= 94;
+        }
+
+        private void endpointCard(String method, String path, JsonNode operation) throws IOException {
+            ensure(98, "OpenAPI contract");
+            stream.setNonStrokingColor(theme.soft());
+            stream.addRect(54, y - 86, 504, 80);
+            stream.fill();
+            stream.setNonStrokingColor(theme.ink());
+            writeAt(stream, method + "  " + pdfText(path), bold, 10, 66, y - 20);
+            stream.setNonStrokingColor(theme.muted());
+            List<String> summary = wrap(pdfText(operation.path("summary").asText("No summary provided.")), 78);
+            writeAt(stream, summary.get(0), regular, 8.5f, 66, y - 38);
+            if (summary.size() > 1) writeAt(stream, summary.get(1), regular, 8.5f, 66, y - 50);
+            writeAt(stream, "OPERATION  " + pdfText(ellipsize(operation.path("operationId").asText("Not declared"), 33)), regular, 8, 66, y - 67);
+            writeAt(stream, "REQUIREMENT  " + pdfText(ellipsize(operation.path("x-velocira-requirement-id").asText("Not declared"), 25)), regular, 8, 298, y - 67);
+            y -= 98;
+        }
+
+        private void schemaRow(String name, JsonNode schema) throws IOException {
+            ensure(40, "OpenAPI contract");
+            stream.setNonStrokingColor(theme.soft());
+            stream.addRect(54, y - 30, 504, 25);
+            stream.fill();
+            stream.setNonStrokingColor(theme.ink());
+            writeAt(stream, pdfText(name), bold, 8.5f, 66, y - 20);
+            stream.setNonStrokingColor(theme.muted());
+            writeAt(stream, pdfText(schema.path("type").asText("object")), regular, 8, 226, y - 20);
+            writeAt(stream, pdfText(ellipsize(jsonValues(schema.path("required")), 44)), regular, 8, 320, y - 20);
+            y -= 36;
         }
 
         void diagram(String title, byte[] png) throws IOException {

@@ -310,7 +310,12 @@ public class DocumentationPackageService {
     }
 
     private String traceability(List<TraceDraft> traces) {
-        StringBuilder text = new StringBuilder("# Traceability matrix\n\n| Requirement | Use case | ERD entity | API operation | Acceptance criterion | Source |\n|---|---|---|---|---|---|\n");
+        StringBuilder text = new StringBuilder("# Traceability\n\n")
+                .append("This matrix connects every reviewed requirement to its design, API, and acceptance evidence. ")
+                .append("Read each row from left to right: requirement -> use case -> entity -> API operation -> acceptance criterion.\n\n")
+                .append("## Requirement matrix\n\n")
+                .append("| Requirement | Use case | Design entity | API operation | Acceptance criterion | Evidence source |\n")
+                .append("|---|---|---|---|---|---|\n");
         for (TraceDraft trace : traces) {
             text.append("|").append(trace.requirement().getRequirementId()).append("|")
                     .append(orDash(trace.useCaseId())).append("|").append(orDash(trace.entityId())).append("|")
