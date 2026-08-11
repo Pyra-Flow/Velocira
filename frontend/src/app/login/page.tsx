@@ -46,14 +46,14 @@ export default function LoginPage() {
       >
         <div>
           {error && <div role="alert" className="auth-page__notice auth-page__notice--error">{error}</div>}
-          <GoogleAuthButton text={t("auth.login.google")} onError={setError} />
-          <div className="auth-page__divider"><div /><span>{t("auth.login.orContinue")}</span></div>
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="auth-login-form space-y-4">
             <Input label={t("auth.login.email")} type="email" icon={<Mail className="h-4 w-4" />} placeholder="you@example.com" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" />
             <Input label={t("auth.login.password")} type="password" icon={<Lock className="h-4 w-4" />} placeholder="••••••••" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password" />
             <div className="flex justify-end"><Link href="/forgot-password" className="text-sm text-accent hover:text-foreground transition-colors">{t("auth.login.forgot")}</Link></div>
             <Button type="submit" className="w-full" size="lg" loading={isSubmitting}>{t("auth.login.submit")}</Button>
           </form>
+          <div className="auth-page__divider"><div /><span>{t("auth.login.orContinue")}</span></div>
+          <GoogleAuthButton text={t("auth.login.google")} onError={setError} />
         </div>
       </AuthPageFrame>
     </PageTransition>

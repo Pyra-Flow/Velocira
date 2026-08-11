@@ -149,12 +149,12 @@ export default function NewProjectPage() {
   return (
     <PageTransition>
       <section className="workspace-page overflow-hidden">
-        <div className="workspace-page__inner max-w-4xl">
+        <div className="workspace-page__inner max-w-6xl">
           <FadeIn>
             <Link href="/projects" className="mb-7 inline-flex items-center gap-1.5 text-sm text-foreground-secondary transition-colors hover:text-accent">
               <ArrowLeft className="h-4 w-4" /> Back to projects
             </Link>
-            <div className="rounded-md border border-border bg-card p-6 sm:p-8">
+            <div className="sf-intake-header">
               <div className="sf-meta mb-5 flex items-center gap-2 text-accent">
                 <Sparkles className="h-4 w-4" /> Smart discovery
               </div>
@@ -163,18 +163,19 @@ export default function NewProjectPage() {
                 title="Tell us the idea. We’ll find the right questions."
                 description="Start with a title and short description. Velocira uses that context to shape a focused discovery conversation—not a generic form."
               />
-              <div className="mt-6 flex items-center gap-3 text-sm text-foreground-secondary" aria-label="Project creation progress">
-                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-accent text-xs font-bold text-on-primary">1</span>
-                <span className="font-medium text-foreground">Describe the idea</span>
-                <span className="h-px flex-1 bg-border" />
-                <span className="flex h-7 w-7 items-center justify-center rounded-full border border-border bg-card text-xs font-bold">2</span>
-                <span>Answer tailored questions</span>
+              <div className="sf-intake-steps" aria-label="Project creation progress">
+                <span className="sf-intake-steps__item sf-intake-steps__item--active"><b>1</b><span><strong>Define</strong><small>Describe the project</small></span></span>
+                <span className="sf-intake-steps__line" />
+                <span className="sf-intake-steps__item"><b>2</b><span><strong>Discover</strong><small>Answer guided questions</small></span></span>
+                <span className="sf-intake-steps__line" />
+                <span className="sf-intake-steps__item"><b>3</b><span><strong>Generate</strong><small>Create the briefing</small></span></span>
               </div>
             </div>
           </FadeIn>
 
           <FadeIn delay={0.05}>
-            <form className="mt-6 space-y-5" onSubmit={(event) => { event.preventDefault(); void createWorkspace(); }}>
+            <div className="sf-intake-layout mt-6">
+            <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void createWorkspace(); }}>
               <Card className="space-y-6 p-5 sm:p-7">
                 <div className="flex items-start gap-3 rounded-md border border-accent/25 bg-accent-light p-4 text-sm text-foreground-secondary">
                   <BrainCircuit className="mt-0.5 h-5 w-5 shrink-0 text-accent" />
@@ -258,6 +259,29 @@ export default function NewProjectPage() {
                 </Button>
               </div>
             </form>
+
+            <aside className="sf-intake-aside" aria-label="Discovery preview">
+              <Card className="p-5">
+                <div className="sf-intake-aside__section">
+                  <p className="sf-meta text-accent">Detected context</p>
+                  <div className="mt-3 flex items-start gap-3">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center border border-accent/35 bg-accent-light text-accent"><BrainCircuit className="h-4 w-4" /></span>
+                    <div><h2 className="text-base font-semibold text-foreground">{detectedContext.label}</h2><p className="mt-1 text-xs leading-5 text-foreground-secondary">{detectedContext.summary}</p></div>
+                  </div>
+                </div>
+                <div className="sf-intake-aside__section">
+                  <p className="sf-meta text-accent">Next questions</p>
+                  <ul className="sf-intake-aside__list">
+                    {detectedContext.questions.map((question, index) => <li key={question}><span className="grid h-5 w-5 shrink-0 place-items-center border border-accent/35 font-mono text-[10px] text-accent">{index + 1}</span>{question}</li>)}
+                  </ul>
+                </div>
+                <div className="sf-intake-aside__section">
+                  <p className="sf-meta text-accent">Evidence trace</p>
+                  <p className="mt-2 text-xs leading-5 text-foreground-secondary">Your brief becomes the source context for every discovery answer and generated artifact.</p>
+                </div>
+              </Card>
+            </aside>
+            </div>
           </FadeIn>
         </div>
       </section>
