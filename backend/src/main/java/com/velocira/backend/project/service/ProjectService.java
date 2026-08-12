@@ -86,6 +86,15 @@ public class ProjectService {
      */
     @Transactional
     public ProjectResponse createProject(UUID ownerId, CreateProjectRequest request) {
+        return createProject(ownerId, request, null);
+    }
+
+    /**
+     * Creates a project with an optional key that makes a retried brief submission safe.
+     * The public CRUD endpoint deliberately continues to use the overload above.
+     */
+    @Transactional
+    public ProjectResponse createProject(UUID ownerId, CreateProjectRequest request, String creationIdempotencyKey) {
         log.info("Creating project '{}' for user [{}]", request.getName(), ownerId);
 
         UserEntity owner = userRepository.findById(ownerId)
@@ -101,6 +110,7 @@ public class ProjectService {
                 .industry(request.getIndustry())
                 .targetAudience(request.getTargetAudience())
                 .teamSize(request.getTeamSize())
+                .creationIdempotencyKey(creationIdempotencyKey)
                 .build();
 
         project = projectRepository.save(project);
@@ -110,6 +120,14 @@ public class ProjectService {
                 "Created project: " + project.getName());
 
         return ProjectMapper.toResponse(project);
+    }
+
+    /** Resolves a prior concise project-creation request without exposing its key publicly. */
+    @Transactional(readOnly = true)
+    public ProjectResponse findByCreationIdempotencyKey(UUID ownerId, String creationIdempotencyKey) {
+        return projectRepository.findByOwnerIdAndCreationIdempotencyKey(ownerId, creationIdempotencyKey)
+                .map(ProjectMapper::toResponse)
+                .orElse(null);
     }
 
     /**

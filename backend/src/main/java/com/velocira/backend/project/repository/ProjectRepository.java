@@ -42,6 +42,8 @@ public interface ProjectRepository extends JpaRepository<ProjectEntity, UUID> {
 
         Optional<ProjectEntity> findByIdAndOwnerId(UUID id, UUID ownerId);
 
+        Optional<ProjectEntity> findByOwnerIdAndCreationIdempotencyKey(UUID ownerId, String creationIdempotencyKey);
+
         /** Serializes creation of the single discovery session allowed per project. */
         @Lock(LockModeType.PESSIMISTIC_WRITE)
         @Query("SELECT p FROM ProjectEntity p WHERE p.id = :id AND p.owner.id = :ownerId")

@@ -4,9 +4,12 @@ import com.velocira.backend.auth.model.AuthProvider;
 import com.velocira.backend.auth.model.Role;
 import com.velocira.backend.auth.model.UserEntity;
 import com.velocira.backend.auth.repository.UserRepository;
+import com.velocira.backend.interview.model.InterviewAnswerEntity;
 import com.velocira.backend.interview.dto.InterviewDtos;
 import com.velocira.backend.interview.model.InterviewAnswerDisposition;
 import com.velocira.backend.interview.model.InterviewSessionStatus;
+import com.velocira.backend.interview.repository.InterviewAnswerRepository;
+import com.velocira.backend.interview.repository.InterviewSessionRepository;
 import com.velocira.backend.interview.service.InterviewService;
 import com.velocira.backend.project.model.ProjectEntity;
 import com.velocira.backend.project.model.ProjectStatus;
@@ -33,6 +36,12 @@ class InterviewServiceIntegrationTest {
 
     @Autowired
     private ProjectRepository projectRepository;
+
+    @Autowired
+    private InterviewAnswerRepository answerRepository;
+
+    @Autowired
+    private InterviewSessionRepository sessionRepository;
 
     @Test
     void completedBriefAutomaticallyUnlocksGenerationAndKeepsAnswerRevisionHistory() {
@@ -94,22 +103,46 @@ class InterviewServiceIntegrationTest {
     }
 
     @Test
-    void replacingAnAiDerivedBriefRetiresItsCurrentAnswersBeforeCreatingNewOnes() {
-        TestProject fixture = createProject("Replaceable brief project");
+    void startsWithAnIndividualQuestionInsteadOfCopyingTheProjectDescriptionIntoAnswers() {
+        TestProject fixture = createProject("Honest discovery project");
 
-        interviewService.bootstrapFromBrief(fixture.project().getId(), fixture.owner().getId(),
-                "A dashboard that helps a support team review customer feedback.");
-        interviewService.bootstrapFromBrief(fixture.project().getId(), fixture.owner().getId(),
-                "A dashboard that helps a support team review feedback trends each week.");
+        InterviewDtos.SessionResponse session = interviewService.start(fixture.project().getId(), fixture.owner().getId());
 
-        InterviewDtos.SessionResponse current = interviewService.summary(fixture.project().getId(), fixture.owner().getId());
-        assertThat(current.answers()).isNotEmpty();
-        assertThat(current.answers()).allSatisfy(answer -> {
-            assertThat(answer.current()).isTrue();
-            assertThat(answer.answerText()).contains("feedback trends each week");
-        });
+        assertThat(session.answers()).isEmpty();
+        assertThat(session.nextQuestion()).isNotNull();
+        assertThat(session.nextQuestion().questionKey()).isEqualTo("problem");
+        assertThat(session.readiness().generationReady()).isFalse();
+    }
+
+    @Test
+    void retiresAutoFilledAnswersWithoutDiscardingARealAnswer() {
+        TestProject fixture = createProject("Mixed evidence project");
+        InterviewDtos.SessionResponse started = interviewService.start(fixture.project().getId(), fixture.owner().getId());
+        interviewService.submitAnswer(fixture.project().getId(), fixture.owner().getId(),
+                new InterviewDtos.AnswerRequest(started.nextQuestion().questionKey(), InterviewAnswerDisposition.ANSWERED,
+                        "Care teams need a reliable way to coordinate their handoffs."));
+
+        var persistedSession = sessionRepository.findByProjectIdAndOwnerId(fixture.project().getId(), fixture.owner().getId())
+                .orElseThrow();
+        answerRepository.save(InterviewAnswerEntity.builder()
+                .session(persistedSession)
+                .category(com.velocira.backend.interview.model.InterviewCategory.USERS)
+                .questionKey("users")
+                .questionText("Who will use this?")
+                .whyWeAsk("This was incorrectly derived from the initial brief.")
+                .disposition(InterviewAnswerDisposition.ANSWERED)
+                .answerText("The initial project description")
+                .source("PROJECT_BRIEF")
+                .evidence(com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode().put("derived", true))
+                .build());
+
+        InterviewDtos.SessionResponse repaired = interviewService.start(fixture.project().getId(), fixture.owner().getId());
+
+        assertThat(repaired.answers()).extracting(InterviewDtos.AnswerResponse::questionKey).containsExactly("problem");
+        assertThat(repaired.nextQuestion()).isNotNull();
         assertThat(interviewService.history(fixture.project().getId(), fixture.owner().getId()).answers())
-                .hasSize(current.answers().size() * 2);
+                .filteredOn(answer -> answer.questionKey().equals("users"))
+                .allSatisfy(answer -> assertThat(answer.current()).isFalse());
     }
 
     @Test

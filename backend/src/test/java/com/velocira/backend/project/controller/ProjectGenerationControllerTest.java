@@ -60,13 +60,12 @@ class ProjectGenerationControllerTest {
     }
 
     @Test
-    void accepts_a_single_brief_with_only_user_facing_generation_data() throws Exception {
+    void accepts_a_single_brief_and_starts_focused_discovery() throws Exception {
         UUID projectId = UUID.randomUUID();
         ProjectResponse project = project(projectId, 0);
-        ProjectGenerationJobResponse job = new ProjectGenerationJobResponse(UUID.randomUUID(), null);
-        when(projectGenerationService.createAndGenerate(any(), any(ProjectBriefRequest.class), anyString()))
-                .thenReturn(new ProjectGenerationResponse(project, job, ProjectGenerationStage.UNDERSTANDING,
-                        "Understanding your project...", "We're turning your idea into a clear starting point.", true, false));
+        when(projectGenerationService.createProject(any(), any(ProjectBriefRequest.class), anyString()))
+                .thenReturn(new ProjectGenerationResponse(project, null, ProjectGenerationStage.NEEDS_INPUT,
+                        "A few questions will make this useful.", "Your idea is saved.", false, false));
 
         mockMvc.perform(post("/v1/project-generations")
                         .header(HttpHeaders.AUTHORIZATION, bearerFor(UUID.randomUUID()))
@@ -75,10 +74,25 @@ class ProjectGenerationControllerTest {
                         .content("{\"brief\":\"A booking app for a salon where clients choose services and staff.\"}"))
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.data.project.id").value(projectId.toString()))
-                .andExpect(jsonPath("$.data.stage").value("UNDERSTANDING"))
-                .andExpect(jsonPath("$.data.headline").value("Understanding your project..."))
+                .andExpect(jsonPath("$.data.stage").value("NEEDS_INPUT"))
+                .andExpect(jsonPath("$.data.headline").value("A few questions will make this useful."))
                 .andExpect(jsonPath("$.data.generation.status").doesNotExist())
                 .andExpect(jsonPath("$.data.generation.correlationId").doesNotExist());
+    }
+
+    @Test
+    void starts_generation_only_after_the_owner_finishes_discovery() throws Exception {
+        UUID projectId = UUID.randomUUID();
+        ProjectGenerationJobResponse job = new ProjectGenerationJobResponse(UUID.randomUUID(), null);
+        when(projectGenerationService.generate(any(), any(), anyString()))
+                .thenReturn(new ProjectGenerationResponse(project(projectId, 0), job, ProjectGenerationStage.UNDERSTANDING,
+                        "Understanding your project...", "We're turning your idea into a clear starting point.", true, false));
+
+        mockMvc.perform(post("/v1/projects/{projectId}/generation", projectId)
+                        .header(HttpHeaders.AUTHORIZATION, bearerFor(UUID.randomUUID()))
+                        .header("Idempotency-Key", UUID.randomUUID().toString()))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.stage").value("UNDERSTANDING"));
     }
 
     @Test

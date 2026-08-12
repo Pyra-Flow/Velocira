@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
 
-/** Compact endpoints for the default brief-to-project experience. */
+/** Compact endpoints for creating a project, then generating and refining its plan. */
 @RestController
 @Validated
 @RequiredArgsConstructor
@@ -33,14 +33,14 @@ public class ProjectGenerationController {
     private final ProjectGenerationService projectGenerationService;
 
     @PostMapping("/v1/project-generations")
-    public ResponseEntity<ApiResponse<ProjectGenerationResponse>> createAndGenerate(
+    public ResponseEntity<ApiResponse<ProjectGenerationResponse>> createProject(
             @AuthenticationPrincipal AuthenticatedUser principal,
             @RequestHeader("Idempotency-Key") @NotBlank @Size(max = 128) String idempotencyKey,
             @Valid @RequestBody ProjectBriefRequest request) {
-        ProjectGenerationResponse result = projectGenerationService.createAndGenerate(
+        ProjectGenerationResponse result = projectGenerationService.createProject(
                 principal.getUserId(), request, idempotencyKey);
         return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(ApiResponse.success(result, "Your project is being created.", HttpStatus.ACCEPTED.value()));
+                .body(ApiResponse.success(result, "Your project is ready for a few questions.", HttpStatus.ACCEPTED.value()));
     }
 
     @GetMapping("/v1/projects/{projectId}/generation")
@@ -48,6 +48,17 @@ public class ProjectGenerationController {
             @AuthenticationPrincipal AuthenticatedUser principal, @PathVariable UUID projectId) {
         return ResponseEntity.ok(ApiResponse.success(
                 projectGenerationService.status(projectId, principal.getUserId()), "Project generation retrieved."));
+    }
+
+    @PostMapping("/v1/projects/{projectId}/generation")
+    public ResponseEntity<ApiResponse<ProjectGenerationResponse>> generate(
+            @AuthenticationPrincipal AuthenticatedUser principal,
+            @PathVariable UUID projectId,
+            @RequestHeader("Idempotency-Key") @NotBlank @Size(max = 128) String idempotencyKey) {
+        ProjectGenerationResponse result = projectGenerationService.generate(
+                projectId, principal.getUserId(), idempotencyKey);
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(ApiResponse.success(result, "Your project is being generated.", HttpStatus.ACCEPTED.value()));
     }
 
     @PostMapping("/v1/projects/{projectId}/refinements")

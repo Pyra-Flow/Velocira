@@ -89,6 +89,10 @@ public class ProjectEntity extends BaseEntity {
     @Column(name = "archived_from_status", length = 30)
     private ProjectStatus archivedFromStatus;
 
+    /** Idempotency key for the concise brief-to-project creation request. */
+    @Column(name = "creation_idempotency_key", length = 128)
+    private String creationIdempotencyKey;
+
     /** Associated generated documents. Cascade delete when project is deleted. */
     @OneToMany(mappedBy = "project", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
