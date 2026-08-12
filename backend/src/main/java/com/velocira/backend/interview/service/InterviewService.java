@@ -89,6 +89,77 @@ public class InterviewService {
         return response(session);
     }
 
+    /**
+     * Builds a canonical brief from the owner's first description. The detailed interview
+     * remains available later, but no longer blocks the first useful project result.
+     */
+    @Transactional
+    public void bootstrapFromBrief(UUID projectId, UUID ownerId, String brief) {
+        ProjectEntity project = ownedProjectForUpdate(projectId, ownerId);
+        if (brief == null || brief.isBlank()) {
+            throw new InterviewStateException("Describe what you would like to create before generating a project.");
+        }
+        InterviewSessionEntity session = sessionRepository.findByProjectIdAndOwnerId(projectId, ownerId).orElse(null);
+        if (session == null) {
+            session = InterviewSessionEntity.builder()
+                    .project(project)
+                    .owner(project.getOwner())
+                    .status(InterviewSessionStatus.IN_PROGRESS)
+                    .canonicalBrief(objectMapper.createObjectNode())
+                    .readinessSnapshot(objectMapper.createObjectNode())
+                    .build();
+            session = sessionRepository.save(session);
+        }
+        InterviewSessionEntity briefSession = session;
+        List<InterviewAnswerEntity> currentAnswers = answerRepository
+                .findBySessionIdAndCurrentTrueOrderByCreatedAtAsc(briefSession.getId());
+        currentAnswers.forEach(answer -> answer.setCurrent(false));
+        if (!currentAnswers.isEmpty()) {
+            answerRepository.saveAll(currentAnswers);
+            // PostgreSQL enforces one current answer per question with a partial
+            // unique index. Flush the retired revisions before inserting the new
+            // brief so Hibernate cannot order the inserts ahead of the updates.
+            answerRepository.flush();
+        }
+
+        String normalizedBrief = brief.trim();
+        List<InterviewAnswerEntity> generatedAnswers = questionCatalog.ordered().stream()
+                .filter(DiscoveryQuestionCatalog.QuestionDefinition::required)
+                .map(question -> briefAnswer(briefSession, project, question, normalizedBrief))
+                .toList();
+        answerRepository.saveAll(generatedAnswers);
+        session.setStatus(InterviewSessionStatus.IN_PROGRESS);
+        session.setConfirmedAt(null);
+        rebuildDerivedState(session);
+        auditService.record(ownerId, project.getOwner().getEmail(), AuditAction.INTERVIEW_STARTED,
+                "Created a first project brief from the owner description for project: " + project.getName());
+    }
+
+    private InterviewAnswerEntity briefAnswer(
+            InterviewSessionEntity session,
+            ProjectEntity project,
+            DiscoveryQuestionCatalog.QuestionDefinition question,
+            String brief) {
+        DiscoveryQuestionCatalog.QuestionDefinition tailored = questionCatalog.tailorForProject(question, project);
+        ObjectNode evidence = objectMapper.createObjectNode();
+        evidence.put("source", "project_brief");
+        evidence.put("derived", true);
+        evidence.put("recordedAt", Instant.now().toString());
+        return InterviewAnswerEntity.builder()
+                .session(session)
+                .category(tailored.category())
+                .questionKey(tailored.key())
+                .questionText(tailored.questionText())
+                .whyWeAsk(tailored.whyWeAsk())
+                .disposition(InterviewAnswerDisposition.ANSWERED)
+                .answerText(brief)
+                .revisionNumber(1)
+                .current(true)
+                .source("PROJECT_BRIEF")
+                .evidence(evidence)
+                .build();
+    }
+
     @Transactional(readOnly = true)
     public InterviewDtos.SessionResponse summary(UUID projectId, UUID ownerId) {
         ownedProject(projectId, ownerId);
@@ -123,6 +194,7 @@ public class InterviewService {
         if (existing != null) {
             existing.setCurrent(false);
             answerRepository.save(existing);
+            answerRepository.flush();
         }
 
         InterviewAnswerEntity answer = InterviewAnswerEntity.builder()

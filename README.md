@@ -42,3 +42,14 @@ conflict with another local service.
 
 Always run Compose from the repository root so the single `compose.yml` file
 and its matching `.env` are used together.
+
+## Default project flow
+
+The first-use path is intentionally brief: create a project, describe the idea,
+and select **Generate project**. The server derives a title and sensible project
+defaults, records a canonical brief, and starts a durable background project-plan
+job. The workspace translates worker stages into plain-language progress, preserves
+the original brief on failure, supports safe retry/cancellation, and lets users
+request a focused update after the first result. Detailed discovery, sources,
+formal SRS controls, and documentation-package exports remain under **Advanced
+project details**.

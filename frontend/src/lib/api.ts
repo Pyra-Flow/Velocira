@@ -329,6 +329,44 @@ export interface UpdateProjectStatusRequest {
   status: ProjectStatus;
 }
 
+export interface ProjectBriefRequest {
+  brief: string;
+  title?: string;
+  audience?: string;
+  include?: string;
+  avoid?: string;
+}
+
+export interface ProjectRefinementRequest {
+  message: string;
+}
+
+export type ProjectGenerationStage =
+  | "UNDERSTANDING"
+  | "CREATING"
+  | "FINISHING"
+  | "READY"
+  | "PARTIAL"
+  | "FAILED"
+  | "CANCELLED"
+  | "NEEDS_INPUT";
+
+export interface ProjectGenerationResponse {
+  project: ProjectResponse;
+  generation: ProjectGenerationJobResponse | null;
+  stage: ProjectGenerationStage;
+  headline: string;
+  detail: string;
+  canCancel: boolean;
+  canRetry: boolean;
+}
+
+/** The concise workspace deliberately receives no worker diagnostics. */
+export interface ProjectGenerationJobResponse {
+  id: string;
+  documentId: string | null;
+}
+
 /* ================================================================== */
 /*  Types — Discovery Interview                                        */
 /* ================================================================== */
@@ -835,6 +873,25 @@ export const projectApi = {
 
   restore: (id: string) =>
     apiClient<ProjectResponse>(`/v1/projects/${id}/restore`, { method: "POST" }),
+};
+
+export const projectGenerationApi = {
+  create: (body: ProjectBriefRequest, idempotencyKey: string) =>
+    apiClient<ProjectGenerationResponse>("/v1/project-generations", {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify(body),
+    }),
+
+  status: (projectId: string) =>
+    apiClient<ProjectGenerationResponse>(`/v1/projects/${projectId}/generation`, { method: "GET" }),
+
+  refine: (projectId: string, body: ProjectRefinementRequest, idempotencyKey: string) =>
+    apiClient<ProjectGenerationResponse>(`/v1/projects/${projectId}/refinements`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify(body),
+    }),
 };
 
 /* ================================================================== */

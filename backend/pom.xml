@@ -74,6 +74,13 @@
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
+        <!-- Spring Boot 4 ships Flyway auto-configuration separately. Keep this
+             alongside the Flyway runtime so every deployed backend applies the
+             checked migration history before JPA validates the schema. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
 
         <!-- ==================== JWT ==================== -->
         <dependency>

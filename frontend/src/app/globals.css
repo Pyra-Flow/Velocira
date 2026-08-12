@@ -630,24 +630,6 @@ footer {
   gap: 8px;
 }
 
-.workspace-header__new-project {
-  display: inline-flex;
-  min-height: 34px;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid var(--primary);
-  border-radius: var(--sf-radius-sm);
-  background: var(--primary);
-  padding: 0 11px;
-  color: var(--on-primary);
-  font-size: 0.75rem;
-  font-weight: 700;
-  transition: background-color 150ms ease, border-color 150ms ease;
-}
-
-.workspace-header__new-project:hover { border-color: var(--primary-hover); background: var(--primary-hover); }
-.workspace-header__new-project svg { width: 14px; height: 14px; }
-
 .workspace-header__icon-action,
 .workspace-header__menu-toggle,
 .briefing-icon-button {
@@ -1227,8 +1209,6 @@ footer {
   .workspace-mobile-menu__brand { display: flex; align-items: center; gap: 10px; margin: 0 8px 28px; color: #F3F7F9; font-size: 1.15rem; font-weight: 700; }
   .workspace-header__mobile-nav { display: grid; gap: 3px; }
   .workspace-header__mobile-link { width: 100%; border: 1px solid transparent; background: transparent; padding: 0 10px; cursor: pointer; text-align: left; }
-  .workspace-header__mobile-link--primary { margin-top: 8px; border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
-  .workspace-header__mobile-link--primary:hover { border-color: var(--primary-hover); background: var(--primary-hover); color: var(--on-primary); }
   .workspace-header__mobile-link--logout { margin-top: 6px; color: var(--error); }
   .workspace-mobile-menu__divider { height: 1px; margin: 12px 0; background: rgba(143, 164, 181, 0.18); }
   .workspace-page { min-height: calc(100vh - 60px); padding: 28px 18px 48px; }
@@ -1253,8 +1233,6 @@ footer {
 
 @media (max-width: 620px) {
   .workspace-header__context { max-width: 52vw; font-size: 0.74rem; }
-  .workspace-header__new-project { width: 34px; justify-content: center; padding: 0; }
-  .workspace-header__new-project span { display: none; }
   .workspace-page__header { display: block; margin-bottom: 22px; padding-bottom: 20px; }
   .workspace-page__actions { justify-content: flex-start; margin-top: 18px; }
   .workspace-page__title,

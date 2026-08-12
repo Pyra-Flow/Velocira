@@ -31,6 +31,8 @@ public interface GenerationJobRepository extends JpaRepository<GenerationJobEnti
     /** Page of a user's jobs for one project, newest first when pageable requests it. */
     Page<GenerationJobEntity> findByProjectIdAndOwnerId(UUID projectId, UUID ownerId, Pageable pageable);
 
+    Optional<GenerationJobEntity> findFirstByProjectIdAndOwnerIdOrderByCreatedAtDesc(UUID projectId, UUID ownerId);
+
     Page<GenerationJobEntity> findByProjectIdAndOwnerIdAndStatus(
             UUID projectId, UUID ownerId, GenerationJobStatus status, Pageable pageable);
 

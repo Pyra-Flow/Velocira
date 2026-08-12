@@ -149,7 +149,7 @@ export default function ProjectsPage() {
             eyebrow="Project library"
             title="Every project, clearly staged."
             description="Search the work in motion, surface the review blockers, and open the right project briefing without hunting through a generic list."
-            actions={<Link href="/projects/new"><Button icon={<Plus className="h-4 w-4" />}>New project</Button></Link>}
+            actions={projects.length > 0 ? <Link href="/projects/new"><Button icon={<Plus className="h-4 w-4" />}>New project</Button></Link> : undefined}
           />
         </FadeIn>
 
@@ -240,7 +240,7 @@ export default function ProjectsPage() {
               <motion.div key="empty" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} className="workspace-empty-state">
                 <FolderOpen aria-hidden="true" />
                 <h2>{debouncedSearch ? "No matching projects" : "No projects in this stage"}</h2>
-                <p>{debouncedSearch ? `Nothing matched “${debouncedSearch}”. Try a broader project name or clear the search.` : activeFilter === "ALL" ? "Create a project to begin a guided briefing and build a reviewable documentation package." : "Try another lifecycle filter, or open a project to continue its current review step."}</p>
+                <p>{debouncedSearch ? `Nothing matched “${debouncedSearch}”. Try a broader project name or clear the search.` : activeFilter === "ALL" ? "Create a project, describe your idea, and get a first project plan." : "Try another lifecycle filter, or open a project to continue its current review step."}</p>
                 {!debouncedSearch && activeFilter === "ALL" && <Link href="/projects/new"><Button size="sm" icon={<Plus className="h-4 w-4" />}>Create project</Button></Link>}
               </motion.div>
             ) : (
