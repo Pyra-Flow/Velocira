@@ -6,6 +6,7 @@ import com.velocira.backend.generation.model.GenerationJobStatus;
 import com.velocira.backend.generation.service.GenerationJobService;
 import com.velocira.backend.interview.service.InterviewService;
 import com.velocira.backend.project.dto.ProjectBriefRequest;
+import com.velocira.backend.project.dto.CreateProjectRequest;
 import com.velocira.backend.project.dto.ProjectRefinementRequest;
 import com.velocira.backend.project.dto.ProjectResponse;
 import com.velocira.backend.project.dto.UpdateProjectRequest;
@@ -20,6 +21,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -42,15 +44,35 @@ class ProjectGenerationWorkflowTest {
         ProjectBriefRequest request = new ProjectBriefRequest(
                 "A booking app for a salon where clients choose services and staff.", null, null, null, null);
         ProjectResponse project = project(projectId, request);
-        GenerationJobResponse job = GenerationJobResponse.builder().id(UUID.randomUUID()).projectId(projectId)
-                .status(GenerationJobStatus.QUEUED).build();
-        when(generationJobService.findByIdempotencyKey(ownerId, key)).thenReturn(job);
-        when(projectService.getProject(projectId, ownerId)).thenReturn(project);
+        when(projectService.findByCreationIdempotencyKey(ownerId, key)).thenReturn(project);
 
-        service.createAndGenerate(ownerId, request, key);
+        var response = service.createProject(ownerId, request, key);
 
-        verify(projectService, never()).createProject(any(), any());
-        verify(interviewService, never()).bootstrapFromBrief(any(), any(), any());
+        assertThat(response.stage().name()).isEqualTo("NEEDS_INPUT");
+        verify(projectService, never()).createProject(any(), any(CreateProjectRequest.class), any());
+        verify(interviewService, never()).start(any(), any());
+        verify(generationJobService, never()).requestJob(any(), any(), any(), any());
+    }
+
+    @Test
+    void creates_a_project_then_starts_questions_without_queueing_generation() {
+        UUID ownerId = UUID.randomUUID();
+        UUID projectId = UUID.randomUUID();
+        String key = "create-" + UUID.randomUUID();
+        ProjectBriefRequest request = new ProjectBriefRequest(
+                "A booking app for a salon where clients choose services and staff.", null, null, null, null);
+        ProjectResponse created = project(projectId, request);
+        ProjectResponse discovery = ProjectResponse.builder().id(projectId).name(created.getName())
+                .description(created.getDescription()).type(created.getType()).status(ProjectStatus.DISCOVERY).build();
+        when(projectService.createProject(eq(ownerId), any(CreateProjectRequest.class), eq(key))).thenReturn(created);
+        when(projectService.getProject(projectId, ownerId)).thenReturn(discovery);
+
+        var response = service.createProject(ownerId, request, key);
+
+        assertThat(response.stage().name()).isEqualTo("NEEDS_INPUT");
+        assertThat(response.generation()).isNull();
+        verify(interviewService).start(projectId, ownerId);
+        verify(generationJobService, never()).requestJob(any(), any(), any(), any());
     }
 
     @Test
@@ -65,7 +87,7 @@ class ProjectGenerationWorkflowTest {
                 () -> service.refine(projectId, ownerId, new ProjectRefinementRequest("Add a staff calendar."), key));
 
         verify(projectService, never()).updateProject(eq(projectId), eq(ownerId), any(UpdateProjectRequest.class));
-        verify(interviewService, never()).bootstrapFromBrief(any(), any(), any());
+        verify(interviewService, never()).start(any(), any());
     }
 
     private ProjectResponse project(UUID projectId, ProjectBriefRequest request) {

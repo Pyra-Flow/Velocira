@@ -876,7 +876,7 @@ export const projectApi = {
 };
 
 export const projectGenerationApi = {
-  create: (body: ProjectBriefRequest, idempotencyKey: string) =>
+  createProject: (body: ProjectBriefRequest, idempotencyKey: string) =>
     apiClient<ProjectGenerationResponse>("/v1/project-generations", {
       method: "POST",
       headers: { "Idempotency-Key": idempotencyKey },
@@ -885,6 +885,12 @@ export const projectGenerationApi = {
 
   status: (projectId: string) =>
     apiClient<ProjectGenerationResponse>(`/v1/projects/${projectId}/generation`, { method: "GET" }),
+
+  generate: (projectId: string, idempotencyKey: string) =>
+    apiClient<ProjectGenerationResponse>(`/v1/projects/${projectId}/generation`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+    }),
 
   refine: (projectId: string, body: ProjectRefinementRequest, idempotencyKey: string) =>
     apiClient<ProjectGenerationResponse>(`/v1/projects/${projectId}/refinements`, {

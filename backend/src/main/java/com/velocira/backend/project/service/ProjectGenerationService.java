@@ -22,7 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.UUID;
 
-/** Orchestrates a plain-language brief into a durable, background project-plan generation. */
+/** Orchestrates a plain-language brief into a project and its focused discovery. */
 @Service
 @RequiredArgsConstructor
 public class ProjectGenerationService {
@@ -32,12 +32,11 @@ public class ProjectGenerationService {
     private final GenerationJobService generationJobService;
 
     @Transactional
-    public ProjectGenerationResponse createAndGenerate(UUID ownerId, ProjectBriefRequest request, String idempotencyKey) {
-        GenerationJobResponse replay = generationJobService.findByIdempotencyKey(ownerId, idempotencyKey);
-        if (replay != null) {
-            ProjectResponse existing = projectService.getProject(replay.getProjectId(), ownerId);
+    public ProjectGenerationResponse createProject(UUID ownerId, ProjectBriefRequest request, String idempotencyKey) {
+        ProjectResponse existing = projectService.findByCreationIdempotencyKey(ownerId, idempotencyKey);
+        if (existing != null) {
             if (!matchesInitialRequest(existing, request)) throw new GenerationIdempotencyConflictException();
-            return response(existing, replay);
+            return response(existing, null);
         }
         String description = ProjectBriefDefaults.description(request);
         ProjectResponse project = projectService.createProject(ownerId, CreateProjectRequest.builder()
@@ -45,11 +44,11 @@ public class ProjectGenerationService {
                 .description(description)
                 .type(ProjectBriefDefaults.type(description))
                 .targetAudience(blankToNull(request.audience()))
-                .build());
-        interviewService.bootstrapFromBrief(project.getId(), ownerId, description);
-        GenerationJobResponse job = generationJobService.requestJob(project.getId(), ownerId,
-                CreateGenerationJobRequest.builder().documentType(DocumentType.SRS).build(), idempotencyKey).job();
-        return response(projectService.getProject(project.getId(), ownerId), job);
+                .build(), idempotencyKey);
+        // The description provides context for tailored questions. It is never an answer
+        // to those questions and cannot unlock generation on its own.
+        interviewService.start(project.getId(), ownerId);
+        return response(projectService.getProject(project.getId(), ownerId), null);
     }
 
     @Transactional
@@ -67,12 +66,30 @@ public class ProjectGenerationService {
         String description = limit(current.getDescription() + "\n\nUpdate requested: " + refinement, 2_000);
         ProjectResponse project = projectService.updateProject(projectId, ownerId,
                 UpdateProjectRequest.builder().description(description).build());
-        interviewService.bootstrapFromBrief(projectId, ownerId, description);
         GenerationJobResponse job = generationJobService.requestJob(projectId, ownerId,
                 CreateGenerationJobRequest.builder().documentType(DocumentType.SRS)
                         .additionalInstructions("Update the project plan to reflect this request: " + refinement).build(),
                 idempotencyKey).job();
         return response(project, job);
+    }
+
+    /** Starts the owner-visible project plan after discovery, preserving an earlier plan as a revision. */
+    @Transactional
+    public ProjectGenerationResponse generate(UUID projectId, UUID ownerId, String idempotencyKey) {
+        GenerationJobResponse replay = generationJobService.findByIdempotencyKey(ownerId, idempotencyKey);
+        if (replay != null) {
+            if (!projectId.equals(replay.getProjectId())) throw new GenerationIdempotencyConflictException();
+            return response(projectService.getProject(projectId, ownerId), replay);
+        }
+        boolean reviseExistingPlan = generationJobService.hasDocument(projectId, ownerId, DocumentType.SRS);
+        CreateGenerationJobRequest request = CreateGenerationJobRequest.builder()
+                .documentType(DocumentType.SRS)
+                .additionalInstructions(reviseExistingPlan
+                        ? "Create a new revision of the project plan using the latest confirmed discovery answers."
+                        : null)
+                .build();
+        GenerationJobResponse job = generationJobService.requestJob(projectId, ownerId, request, idempotencyKey).job();
+        return response(projectService.getProject(projectId, ownerId), job);
     }
 
     public ProjectGenerationResponse status(UUID projectId, UUID ownerId) {
@@ -114,7 +131,7 @@ public class ProjectGenerationService {
             case PARTIAL -> "Part of your project is ready.";
             case FAILED -> "We couldn't finish this version.";
             case CANCELLED -> "Generation was cancelled.";
-            default -> "Your project is ready to generate.";
+            default -> "A few questions will make this useful.";
         };
     }
 
@@ -127,7 +144,7 @@ public class ProjectGenerationService {
             case PARTIAL -> "The earlier version is still available. Tell us what to complete or change.";
             case FAILED -> job == null || job.getUserMessage() == null ? "Your idea is saved. You can safely try again." : job.getUserMessage();
             case CANCELLED -> "Your project idea is still saved whenever you're ready.";
-            default -> "Start with the description you already shared.";
+            default -> "Your idea is saved. Answer the focused questions in your own words, then generate your first project plan.";
         };
     }
 

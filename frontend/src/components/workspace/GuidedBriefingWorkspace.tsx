@@ -75,10 +75,14 @@ export default function GuidedBriefingWorkspace({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [documentRevision, setDocumentRevision] = useState(0);
   const [slowGeneration, setSlowGeneration] = useState(false);
+  const [startingGeneration, setStartingGeneration] = useState(false);
   const stage = generation?.stage ?? "NEEDS_INPUT";
   const isActive = ACTIVE_STAGES.has(stage);
   const isReady = stage === "READY";
   const hasPreview = isReady || stage === "PARTIAL";
+  const needsDiscovery = ["DRAFT", "DISCOVERY"].includes(project.status);
+  const readyToGenerate = stage === "NEEDS_INPUT" && project.status === "READY_FOR_GENERATION";
+  const canGenerateFromDiscovery = !isActive && project.status === "READY_FOR_GENERATION";
 
   const load = useCallback(async () => {
     try {
@@ -144,6 +148,26 @@ export default function GuidedBriefingWorkspace({
       onProjectUpdated();
     } catch {
       setActionError("We couldn't restart generation because the connection was interrupted. Please try again.");
+    }
+  };
+
+  const generateProject = async () => {
+    setStartingGeneration(true);
+    setSlowGeneration(false);
+    setActionError(null);
+    try {
+      const response = await projectGenerationApi.generate(project.id, key("generate-project"));
+      if (!response.success || !response.data) {
+        setActionError(response.message || "We couldn’t start generation. Your answers are still here—try again.");
+        return;
+      }
+      setGeneration(response.data);
+      await load();
+      onProjectUpdated();
+    } catch {
+      setActionError("We couldn’t start generation because the connection was interrupted. Your answers are still here—try again.");
+    } finally {
+      setStartingGeneration(false);
     }
   };
 
@@ -220,7 +244,7 @@ export default function GuidedBriefingWorkspace({
               </div>
               {result ? <article className="mt-7 border-t border-border pt-6"><h3 className="text-lg font-semibold text-foreground">{result.title}</h3><div className="mt-5"><ProjectPlanPreview content={result.content ?? ""} /></div></article> : <div className="mt-7 flex flex-wrap items-center gap-3 border-t border-border pt-6 text-sm text-foreground-secondary"><span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin text-accent" /> Loading your result…</span>{actionError && <Button size="sm" variant="outline" onClick={() => void load()}>Try again</Button>}</div>}
               <div className="mt-7 border-t border-border pt-6">
-                {!refinementOpen ? <Button onClick={() => setRefinementOpen(true)} icon={<Sparkles className="h-4 w-4" />}>Continue editing</Button> : (
+                {!refinementOpen ? <div className="flex flex-wrap gap-2">{canGenerateFromDiscovery && <Button onClick={() => void generateProject()} loading={startingGeneration} icon={<Sparkles className="h-4 w-4" />}>Generate updated project</Button>}<Button variant={canGenerateFromDiscovery ? "outline" : "primary"} onClick={() => setRefinementOpen(true)} icon={<Sparkles className="h-4 w-4" />}>Continue editing</Button></div> : (
                   <div><label htmlFor="refinement" className="text-sm font-semibold text-foreground">What would you like to change?</label><textarea id="refinement" value={refinement} onChange={(event) => setRefinement(event.target.value)} rows={4} placeholder="For example: Make this work for multiple salon locations." className="mt-2 w-full resize-y rounded-md border border-input-border bg-input-bg px-4 py-3 text-foreground placeholder:text-placeholder focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20" /><div className="mt-3 flex flex-wrap gap-2"><Button onClick={() => void refine()} loading={submittingRefinement}>Update project</Button><Button variant="ghost" onClick={() => { setRefinementOpen(false); setRefinement(""); }}>Cancel</Button></div></div>
                 )}
               </div>
@@ -228,19 +252,36 @@ export default function GuidedBriefingWorkspace({
           </section>
         )}
 
-        {!isActive && !hasPreview && (
+        {needsDiscovery && (
+          <section className="mt-8" aria-labelledby="discovery-start-heading">
+            <div className="mb-5 max-w-2xl">
+              <p className="sf-meta text-accent">Before we generate</p>
+              <h2 id="discovery-start-heading" className="mt-2 text-2xl font-semibold text-foreground">Answer a few focused questions</h2>
+              <p className="mt-2 text-sm leading-6 text-foreground-secondary">Your description helps tailor the questions. Each answer is yours—we never copy your idea into the other answers.</p>
+            </div>
+            <InterviewPanel
+              projectId={project.id}
+              onGenerateProject={() => void generateProject()}
+              generationSubmitting={startingGeneration}
+              onUpdated={() => { setDocumentRevision((current) => current + 1); onProjectUpdated(); }}
+            />
+          </section>
+        )}
+
+        {!needsDiscovery && !isActive && !hasPreview && (
           <Card className="mt-8 p-6" role={stage === "FAILED" ? "alert" : "status"}>
-            <h2 className="text-xl font-semibold text-foreground">{generation?.headline ?? "Your project is ready to generate."}</h2>
-            <p className="mt-2 text-sm leading-6 text-foreground-secondary">{jobMessage}</p>
+            <h2 className="text-xl font-semibold text-foreground">{readyToGenerate ? "Your project is ready to generate." : generation?.headline ?? "Your project is ready to generate."}</h2>
+            <p className="mt-2 text-sm leading-6 text-foreground-secondary">{readyToGenerate ? "Your answers are saved. Generate your first project plan whenever you are ready." : jobMessage}</p>
             <div className="mt-5 flex flex-wrap gap-3">
+              {readyToGenerate && <Button onClick={() => void generateProject()} loading={startingGeneration} icon={<Sparkles className="h-4 w-4" />}>Generate project</Button>}
               {generation?.canRetry && <Button onClick={() => void retry()} icon={<RotateCcw className="h-4 w-4" />}>Try again</Button>}
               {actionError && <Button variant="outline" onClick={() => void load()}>Check connection</Button>}
-              <Button variant={generation?.canRetry ? "outline" : "primary"} onClick={() => setRefinementOpen(true)}>Update idea</Button>
+              {!readyToGenerate && <Button variant={generation?.canRetry ? "outline" : "primary"} onClick={() => setRefinementOpen(true)}>Update idea</Button>}
             </div>
           </Card>
         )}
 
-        {refinementOpen && !hasPreview && !isActive && (
+        {refinementOpen && !needsDiscovery && !hasPreview && !isActive && (
           <Card className="mt-5 p-6">
             <label htmlFor="refinement" className="text-sm font-semibold text-foreground">What would you like to change?</label>
             <textarea id="refinement" value={refinement} onChange={(event) => setRefinement(event.target.value)} rows={4} placeholder="For example: Add multiple locations, but keep the first version simple." className="mt-2 w-full resize-y rounded-md border border-input-border bg-input-bg px-4 py-3 text-foreground placeholder:text-placeholder focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20" />
@@ -250,13 +291,13 @@ export default function GuidedBriefingWorkspace({
 
         {actionError && <p className="mt-5 rounded-md border border-error/25 bg-error/5 px-3 py-2.5 text-sm text-error" role="alert">{actionError}</p>}
 
-        {!isActive && (
+        {!isActive && !needsDiscovery && (
           <details className="mt-8 border-t border-border pt-5" open={advancedOpen} onToggle={(event) => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}>
             <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-accent/30"><ChevronDown className="h-4 w-4" /> Advanced project details</summary>
             <div className="mt-6 space-y-8">
               <InterviewPanel projectId={project.id} onUpdated={() => { setDocumentRevision((current) => current + 1); onProjectUpdated(); }} />
-              <SrsWorkspace projectId={project.id} projectName={project.name} projectDescription={project.description} generationUnlocked={generationUnlocked} onUpdated={onProjectUpdated} />
-              <DocumentationPackageWorkspace projectId={project.id} generationUnlocked={generationUnlocked} refreshVersion={documentRevision} onUpdated={onProjectUpdated} />
+              <SrsWorkspace projectId={project.id} projectName={project.name} projectDescription={project.description} generationUnlocked={generationUnlocked} onUpdated={() => { setDocumentRevision((current) => current + 1); onProjectUpdated(); }} />
+              <DocumentationPackageWorkspace projectId={project.id} refreshVersion={documentRevision} onUpdated={onProjectUpdated} />
               <div className="flex flex-wrap gap-2 border-t border-border pt-6"><Button variant="ghost" onClick={() => void onRefresh()}>Refresh project</Button><Button variant="ghost" onClick={() => void onArchiveToggle()} disabled={projectActionSubmitting} icon={<X className="h-4 w-4" />}>{project.status === "ARCHIVED" ? "Restore project" : "Archive project"}</Button></div>
             </div>
           </details>

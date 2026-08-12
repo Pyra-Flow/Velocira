@@ -175,6 +175,13 @@ public class GenerationJobService {
                 .orElse(null);
     }
 
+    /** Returns whether an existing artifact needs the next project-plan run to be a revision. */
+    @Transactional(readOnly = true)
+    public boolean hasDocument(UUID projectId, UUID ownerId, DocumentType documentType) {
+        loadOwnedProject(projectId, ownerId);
+        return documentRepository.existsByProjectIdAndType(projectId, documentType);
+    }
+
     /** Resolves a repeated top-level create/refine request before it can mutate project state. */
     @Transactional(readOnly = true)
     public GenerationJobResponse findByIdempotencyKey(UUID ownerId, String idempotencyKey) {

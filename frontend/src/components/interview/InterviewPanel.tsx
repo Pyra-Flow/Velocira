@@ -1,15 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  AlertTriangle,
   ArrowRight,
   BrainCircuit,
   Check,
   CheckCircle2,
-  CircleHelp,
-  GitPullRequest,
   Lightbulb,
   Loader2,
   Pencil,
@@ -30,6 +27,8 @@ import {
 type Props = {
   projectId: string;
   onUpdated?: () => void;
+  onGenerateProject?: () => void;
+  generationSubmitting?: boolean;
 };
 
 function label(value: string) {
@@ -48,7 +47,7 @@ function questionFromAnswer(answer: InterviewAnswerResponse): InterviewQuestionR
   };
 }
 
-export default function InterviewPanel({ projectId, onUpdated }: Props) {
+export default function InterviewPanel({ projectId, onUpdated, onGenerateProject, generationSubmitting = false }: Props) {
   const [session, setSession] = useState<InterviewSessionResponse | null>(null);
   const [answerText, setAnswerText] = useState("");
   const [selectedOptionKeys, setSelectedOptionKeys] = useState<string[]>([]);
@@ -58,12 +57,6 @@ export default function InterviewPanel({ projectId, onUpdated }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const activeQuestion = editing ? questionFromAnswer(editing) : session?.nextQuestion ?? null;
-  const briefFields = useMemo(() => {
-    if (!session) return [];
-    return Object.entries(session.brief.content).filter(
-      ([, value]) => typeof value === "string" && value.trim().length > 0
-    ) as Array<[string, string]>;
-  }, [session]);
   const readinessPercent = session
     ? Math.round((session.readiness.answeredRequiredCategories / Math.max(session.readiness.requiredCategoryCount, 1)) * 100)
     : 0;
@@ -255,37 +248,17 @@ export default function InterviewPanel({ projectId, onUpdated }: Props) {
           <motion.div key="questions-complete" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
             <Card className="border-accent/30 bg-card p-6 sm:p-7">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                <div className="flex gap-3"><CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-success" /><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-success">Questions complete</p><h3 className="mt-1 text-xl font-semibold text-foreground">Start generating your documents.</h3><p className="mt-2 max-w-xl text-sm leading-6 text-foreground-secondary">Your answers are already the input. The SRS and full package controls are directly below—nothing else to confirm.</p></div></div>
-                <Button variant="outline" size="sm" icon={<RotateCcw className="h-4 w-4" />} onClick={() => void reopen()} loading={submitting}>Edit discovery</Button>
+                <div className="flex gap-3"><CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-success" /><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-success">Questions complete</p><h3 className="mt-1 text-xl font-semibold text-foreground">Ready to generate your first version.</h3><p className="mt-2 max-w-xl text-sm leading-6 text-foreground-secondary">Your answers are the input. Review them or generate when this feels right.</p></div></div>
+                <div className="flex flex-wrap gap-2">
+                  {onGenerateProject && <Button size="sm" icon={<Sparkles className="h-4 w-4" />} onClick={onGenerateProject} loading={generationSubmitting} disabled={submitting}>Generate project</Button>}
+                  <Button variant="outline" size="sm" icon={<RotateCcw className="h-4 w-4" />} onClick={() => void reopen()} loading={submitting} disabled={generationSubmitting}>Edit discovery</Button>
+                </div>
               </div>
-              <div className="mt-5 flex items-center gap-2 rounded-md border border-accent/20 bg-accent-light/40 px-3 py-2.5 text-sm text-foreground-secondary"><Sparkles className="h-4 w-4 text-accent" /> Generate an SRS now, or go straight to the full package after the SRS is created.</div>
+              <div className="mt-5 flex items-center gap-2 rounded-md border border-accent/20 bg-accent-light/40 px-3 py-2.5 text-sm text-foreground-secondary"><Sparkles className="h-4 w-4 text-accent" /> {onGenerateProject ? "Your description was used to tailor these questions, not fill in their answers." : "Generate an SRS now, or go straight to the full package after the SRS is created."}</div>
             </Card>
           </motion.div>
         )}
       </AnimatePresence>
-
-      <div className="grid gap-4 lg:grid-cols-[1.15fr_.85fr]">
-        <Card className="space-y-3">
-          <div className="flex items-center justify-between gap-2"><h3 className="font-semibold text-foreground">Live brief</h3><span className="sf-meta text-foreground-secondary">Version {session.brief.version}</span></div>
-          {briefFields.length ? <dl className="space-y-3">{briefFields.slice(0, 4).map(([key, value]) => <div key={key}><dt className="sf-meta font-medium uppercase tracking-wider text-foreground-secondary">{label(key)}</dt><dd className="mt-1 line-clamp-3 whitespace-pre-wrap text-sm text-foreground">{value}</dd></div>)}</dl> : <p className="text-sm text-foreground-secondary">Captured facts appear here as you answer.</p>}
-        </Card>
-        <Card className="space-y-3">
-          <div className="flex items-center gap-2"><AlertTriangle className="h-5 w-5 text-warning" /><h3 className="font-semibold text-foreground">Visible gaps</h3></div>
-          {session.readiness.generationReady ? <p className="text-sm text-success">No material readiness blocker remains.</p> : <ul className="space-y-2 text-sm text-foreground-secondary">{session.readiness.blockers.slice(0, 3).map((blocker) => <li key={blocker}>• {blocker}</li>)}</ul>}
-          {session.assumptions.filter((assumption) => assumption.status === "OPEN").slice(0, 2).map((assumption) => <p key={assumption.id} className="rounded-lg bg-warning/10 p-2 text-xs text-foreground-secondary">Assumption: {assumption.statement}</p>)}
-        </Card>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card className="space-y-3" aria-labelledby="decision-log-heading">
-          <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><GitPullRequest className="h-5 w-5 text-accent" /><h3 id="decision-log-heading" className="font-semibold text-foreground">Decision log</h3></div><span className="sf-meta text-foreground-secondary">{session.decisions.filter((decision) => decision.status === "ACTIVE").length} active</span></div>
-          {session.decisions.filter((decision) => decision.status === "ACTIVE").length > 0 ? <ul className="space-y-2">{session.decisions.filter((decision) => decision.status === "ACTIVE").slice(0, 3).map((decision) => <li key={decision.id} className="border-l-2 border-accent bg-accent-light/35 px-3 py-2"><p className="text-sm font-medium text-foreground">{decision.statement}</p><p className="mt-1 text-xs leading-5 text-foreground-secondary">{decision.rationale}</p></li>)}</ul> : <p className="text-sm text-foreground-secondary">Confirmed decisions will be recorded here as the discovery brief develops.</p>}
-        </Card>
-        <Card className="space-y-3" aria-labelledby="review-queue-heading">
-          <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><CircleHelp className="h-5 w-5 text-warning" /><h3 id="review-queue-heading" className="font-semibold text-foreground">Review queue</h3></div><span className="sf-meta text-foreground-secondary">{session.openQuestions.filter((question) => question.status !== "RESOLVED").length} open</span></div>
-          {session.openQuestions.filter((question) => question.status !== "RESOLVED").length > 0 ? <ul className="space-y-2">{session.openQuestions.filter((question) => question.status !== "RESOLVED").slice(0, 3).map((question) => <li key={question.id} className="border-l-2 border-warning bg-warning/5 px-3 py-2"><p className="text-sm font-medium text-foreground">{question.questionText}</p><p className="mt-1 text-xs leading-5 text-foreground-secondary">{question.reason}</p></li>)}</ul> : <p className="text-sm text-success">No open questions are waiting for review.</p>}
-        </Card>
-      </div>
 
       {session.answers.length > 0 && (
         <details className="rounded-lg border border-border bg-card p-4">

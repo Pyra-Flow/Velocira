@@ -36,7 +36,7 @@ import {
   type SrsVersionResponse,
 } from "@/lib/api";
 
-type Props = { projectId: string; generationUnlocked: boolean; refreshVersion?: number; onUpdated?: () => void };
+type Props = { projectId: string; refreshVersion?: number; onUpdated?: () => void };
 type ActiveAction = "generate" | "export" | "preview" | null;
 type WorkspaceMode = "atlas" | "handoff";
 
@@ -178,7 +178,7 @@ function ArtifactIcon({ type, className }: { type: DocumentationArtifactType; cl
   return <Icon className={className} aria-hidden="true" />;
 }
 
-export default function DocumentationPackageWorkspace({ projectId, generationUnlocked, refreshVersion = 0, onUpdated }: Props) {
+export default function DocumentationPackageWorkspace({ projectId, refreshVersion = 0, onUpdated }: Props) {
   const [srsVersions, setSrsVersions] = useState<SrsVersionResponse[]>([]);
   const [packages, setPackages] = useState<DocumentationPackageResponse[]>([]);
   const [exports, setExports] = useState<DocumentationExportResponse[]>([]);
@@ -313,8 +313,8 @@ export default function DocumentationPackageWorkspace({ projectId, generationUnl
     return (
       <section className={styles.empty} aria-labelledby="package-heading">
         <PackageOpen aria-hidden="true" />
-        <div><p>Documents / package atlas</p><h2 id="package-heading">No package is ready to inspect.</h2><span>Generate the reviewed package to open its documents, diagrams, and handoff files here.</span></div>
-        <button type="button" onClick={() => void generate()} disabled={!generationUnlocked || !latestSrs || activeAction === "generate"}><Sparkles aria-hidden="true" /> Generate package</button>
+        <div><p>Documents / package atlas</p><h2 id="package-heading">Turn your SRS into a complete package.</h2><span>{latestSrs ? "Your latest SRS is ready. Generate the documents, diagrams, and handoff files." : "Generate an SRS first, then its documents, diagrams, and handoff files will be ready here."}</span>{error && <p className={styles.alertError} role="alert">{error}</p>}{notice && <p className={styles.alert} role="status">{notice}</p>}</div>
+        <button type="button" onClick={() => void generate()} disabled={!latestSrs || activeAction === "generate"}>{activeAction === "generate" ? <Loader2 className={styles.spin} aria-hidden="true" /> : <Sparkles aria-hidden="true" />}{activeAction === "generate" ? "Generating package" : "Generate package"}</button>
       </section>
     );
   }

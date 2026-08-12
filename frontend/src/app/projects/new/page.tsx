@@ -49,7 +49,7 @@ export default function NewProjectPage() {
     setSubmitting(true);
     setError(null);
     try {
-      const result = await projectGenerationApi.create({
+      const result = await projectGenerationApi.createProject({
         brief: brief.trim(),
         title: title.trim() || undefined,
         audience: audience.trim() || undefined,
@@ -124,8 +124,8 @@ export default function NewProjectPage() {
 
                 {error && <p id={`${briefId}-error`} className="mt-5 rounded-md border border-error/25 bg-error/5 px-3 py-2.5 text-sm text-error" role="alert">{error}</p>}
                 <div className="mt-7 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-xs text-foreground-secondary">We’ll create a clear first version from your description.</p>
-                  <Button type="submit" loading={submitting} disabled={submitting} icon={<Sparkles className="h-4 w-4" />} className="justify-center">Generate project</Button>
+                  <p className="text-xs text-foreground-secondary">We’ll use this to tailor a few focused questions before generating your first version.</p>
+                  <Button type="submit" loading={submitting} disabled={submitting} icon={<Sparkles className="h-4 w-4" />} className="justify-center">Continue to questions</Button>
                 </div>
               </form>
             </Card>
