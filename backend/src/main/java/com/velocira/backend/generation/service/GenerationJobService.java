@@ -117,8 +117,10 @@ public class GenerationJobService {
         ensureEligibleForNewJob(project);
         interviewService.assertGenerationReady(projectId, ownerId);
 
-        // Do not overwrite a manually created or previously published document.
-        if (documentRepository.existsByProjectIdAndType(projectId, request.getDocumentType())) {
+        // A plain generation never overwrites a document. An explicit refinement creates
+        // the next revision of the project plan instead.
+        boolean refinement = request.getAdditionalInstructions() != null && !request.getAdditionalInstructions().isBlank();
+        if (documentRepository.existsByProjectIdAndType(projectId, request.getDocumentType()) && !refinement) {
             GenerationJobEntity needsInput = buildJob(project, template, request.getDocumentType(), normalizedKey,
                     snapshot, snapshotHash, requestHash, GenerationJobStatus.NEEDS_INPUT);
             Instant now = Instant.now();
@@ -162,6 +164,34 @@ public class GenerationJobService {
     public GenerationJobResponse getJob(UUID projectId, UUID jobId, UUID ownerId) {
         loadOwnedProject(projectId, ownerId);
         return GenerationJobMapper.toResponse(loadOwnedJob(projectId, jobId, ownerId));
+    }
+
+    /** Latest job for the concise project workspace; attempt diagnostics remain on the jobs API. */
+    @Transactional(readOnly = true)
+    public GenerationJobResponse latestJob(UUID projectId, UUID ownerId) {
+        loadOwnedProject(projectId, ownerId);
+        return generationJobRepository.findFirstByProjectIdAndOwnerIdOrderByCreatedAtDesc(projectId, ownerId)
+                .map(GenerationJobMapper::toResponse)
+                .orElse(null);
+    }
+
+    /** Resolves a repeated top-level create/refine request before it can mutate project state. */
+    @Transactional(readOnly = true)
+    public GenerationJobResponse findByIdempotencyKey(UUID ownerId, String idempotencyKey) {
+        String normalizedKey = requireIdempotencyKey(idempotencyKey);
+        return generationJobRepository.findByOwnerIdAndIdempotencyKey(ownerId, normalizedKey)
+                .map(GenerationJobMapper::toResponse)
+                .orElse(null);
+    }
+
+    /** Prevents a refinement from being accepted but silently omitted from an in-flight job. */
+    @Transactional(readOnly = true)
+    public boolean hasActiveJob(UUID projectId, UUID ownerId) {
+        loadOwnedProject(projectId, ownerId);
+        return generationJobRepository
+                .findFirstByProjectIdAndRequestedDocumentTypeAndStatusInOrderByCreatedAtDesc(
+                        projectId, DocumentType.SRS, ACTIVE_STATUSES)
+                .isPresent();
     }
 
     @Transactional

@@ -59,27 +59,32 @@ class DeterministicTestProvider:
         )
         digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
         project_name = request.project.name
-        artifact_label = request.artifact_type.replace("-", " ").replace("_", " ").title()
+        description = (request.project.description or "").strip() or "The project idea provided by the owner."
         output: dict[str, Any] = {
             "schema_version": "1.0",
-            "title": f"{project_name} — {artifact_label}",
+            "title": f"{project_name} project plan",
             "artifact_type": request.artifact_type,
             "version": f"test-{digest[:8]}",
             "sections": [
                 {
-                    "id": "purpose",
-                    "heading": "Purpose",
-                    "content": "This deterministic test artifact proves the asynchronous generation path can persist a structured result.",
+                    "id": "starting-point",
+                    "heading": "Starting point",
+                    "content": f"This first plan is based on your idea: {description}",
                 },
                 {
-                    "id": "input-summary",
-                    "heading": "Input Summary",
-                    "content": f"The result was generated from an immutable input snapshot with digest {digest[:12]}.",
+                    "id": "first-release",
+                    "heading": "First release",
+                    "content": "Focus the first version on one clear task that helps the intended users make progress quickly. Keep anything not essential for that task as a later improvement.",
                 },
                 {
-                    "id": "next-step",
-                    "heading": "Next Step",
-                    "content": "Replace the deterministic provider with a reviewed provider adapter before using this output as standards content.",
+                    "id": "main-flow",
+                    "heading": "Main user flow",
+                    "content": "A person opens the project, completes the main task described in the idea, and receives a clear confirmation or next step.",
+                },
+                {
+                    "id": "assumptions",
+                    "heading": "Assumptions to review",
+                    "content": "Specific roles, data fields, integrations, and success measures have not been confirmed yet. Refine this plan when those details matter.",
                 },
             ],
         }

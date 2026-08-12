@@ -10,7 +10,6 @@ import {
   LogOut,
   Menu,
   Moon,
-  Plus,
   Settings,
   ShieldCheck,
   Sun,
@@ -140,10 +139,6 @@ export default function WorkspaceHeader({ onOpenCommandPalette }: Props) {
         <div className="workspace-header__inner">
           <p className="workspace-header__context">{workspaceContext(pathname)}</p>
           <div className="workspace-header__actions">
-            <Link href="/projects/new" className="workspace-header__new-project">
-              <Plus aria-hidden="true" />
-              <span>New project</span>
-            </Link>
             {onOpenCommandPalette && <Tooltip label="Quick actions · Ctrl+K"><button type="button" className="workspace-header__icon-action workspace-header__command" onClick={onOpenCommandPalette} aria-label="Open quick actions"><Command aria-hidden="true" /></button></Tooltip>}
             <Tooltip label={theme === "dark" ? "Use light theme" : "Use dark theme"}><button type="button" className="workspace-header__icon-action" onClick={toggleTheme} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
               {theme === "dark" ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
@@ -166,7 +161,6 @@ export default function WorkspaceHeader({ onOpenCommandPalette }: Props) {
             {navigationLinks(true)}
             <div className="workspace-mobile-menu__divider" />
             <Link href="/settings" onClick={closeMenu} aria-current={isActive("/settings") ? "page" : undefined} className={cn("workspace-header__mobile-link", isActive("/settings") && "is-active")}><Settings aria-hidden="true" />Settings</Link>
-            <Link href="/projects/new" onClick={closeMenu} className="workspace-header__mobile-link workspace-header__mobile-link--primary"><Plus aria-hidden="true" />New project</Link>
             <button type="button" onClick={toggleTheme} className="workspace-header__mobile-link"><span>{theme === "dark" ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</span>{theme === "dark" ? "Use light theme" : "Use dark theme"}</button>
             <Link href="/logout" onClick={closeMenu} className="workspace-header__mobile-link workspace-header__mobile-link--logout"><LogOut aria-hidden="true" />Sign out</Link>
           </div>

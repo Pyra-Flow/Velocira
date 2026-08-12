@@ -60,7 +60,9 @@ def test_generation_returns_validated_reproducible_artifact() -> None:
         "latency_ms",
         "error",
     }
-    assert body["artifact"]["sections"][0]["id"] == "purpose"
+    assert body["artifact"]["sections"][0]["id"] == "starting-point"
+    assert "asynchronous" not in body["artifact"]["content"].lower()
+    assert "provider" not in body["artifact"]["content"].lower()
 
 
 def test_internal_token_and_credential_safety_are_enforced() -> None:

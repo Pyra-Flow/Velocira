@@ -210,7 +210,10 @@ public class GenerationExecutionService {
             markCancelled(job, run, now);
             return new CompletionOutcome(false, 0, BigDecimal.ZERO);
         }
-        if (documentRepository.existsByProjectIdAndType(job.getProject().getId(), job.getRequestedDocumentType())) {
+        boolean refinement = !job.getInputSnapshot().path("additionalInstructions").asText("").isBlank();
+        Optional<DocumentEntity> existingDocument = documentRepository.findByProjectIdAndType(
+                job.getProject().getId(), job.getRequestedDocumentType());
+        if (existingDocument.isPresent() && !refinement) {
             markNeedsInput(job, run, now,
                     "An artifact of this type was created while this job was running, so this response was not published.");
             return new CompletionOutcome(false, 0, BigDecimal.ZERO);
@@ -222,17 +225,19 @@ public class GenerationExecutionService {
         run.setCompletedAt(now);
         generationRunRepository.save(run);
 
-        DocumentEntity document = DocumentEntity.builder()
+        DocumentEntity document = existingDocument.orElseGet(() -> DocumentEntity.builder()
                 .project(job.getProject())
                 .type(job.getRequestedDocumentType())
-                .status(DocumentStatus.COMPLETED)
-                .title(response.artifact().title().trim())
-                .content(response.artifact().content())
-                .version(1)
-                .wordCount(wordCount(response.artifact().content()))
-                .aiModel(response.model())
-                .generationTimeMs(response.latencyMs())
-                .build();
+                .version(0)
+                .build());
+        int nextVersion = document.getVersion() + 1;
+        document.setStatus(DocumentStatus.COMPLETED);
+        document.setTitle(response.artifact().title().trim());
+        document.setContent(response.artifact().content());
+        document.setVersion(nextVersion);
+        document.setWordCount(wordCount(response.artifact().content()));
+        document.setAiModel(response.model());
+        document.setGenerationTimeMs(response.latencyMs());
         document = documentRepository.save(document);
 
         ArtifactVersionEntity artifact = ArtifactVersionEntity.builder()
@@ -241,7 +246,7 @@ public class GenerationExecutionService {
                 .generationJob(job)
                 .generationRun(run)
                 .artifactType(job.getRequestedDocumentType())
-                .versionNumber(1)
+                .versionNumber(nextVersion)
                 .title(response.artifact().title().trim())
                 .content(response.artifact().content())
                 .contentSha256(GenerationHashing.sha256(response.artifact().content()))

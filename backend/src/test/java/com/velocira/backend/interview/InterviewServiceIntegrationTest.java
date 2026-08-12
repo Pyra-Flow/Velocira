@@ -94,6 +94,25 @@ class InterviewServiceIntegrationTest {
     }
 
     @Test
+    void replacingAnAiDerivedBriefRetiresItsCurrentAnswersBeforeCreatingNewOnes() {
+        TestProject fixture = createProject("Replaceable brief project");
+
+        interviewService.bootstrapFromBrief(fixture.project().getId(), fixture.owner().getId(),
+                "A dashboard that helps a support team review customer feedback.");
+        interviewService.bootstrapFromBrief(fixture.project().getId(), fixture.owner().getId(),
+                "A dashboard that helps a support team review feedback trends each week.");
+
+        InterviewDtos.SessionResponse current = interviewService.summary(fixture.project().getId(), fixture.owner().getId());
+        assertThat(current.answers()).isNotEmpty();
+        assertThat(current.answers()).allSatisfy(answer -> {
+            assertThat(answer.current()).isTrue();
+            assertThat(answer.answerText()).contains("feedback trends each week");
+        });
+        assertThat(interviewService.history(fixture.project().getId(), fixture.owner().getId()).answers())
+                .hasSize(current.answers().size() * 2);
+    }
+
+    @Test
     void domainContextTailorsAndPersistsTheQuestionTheOwnerActuallySees() {
         TestProject fixture = createProject("ClinicFlow");
 

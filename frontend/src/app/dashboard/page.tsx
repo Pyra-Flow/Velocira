@@ -133,12 +133,12 @@ export default function DashboardPage() {
       <section className="workspace-page">
         <div className="workspace-page__inner">
           <WorkspacePageHeader
-            eyebrow="Project command center"
-            title="Dashboard"
-            description="See what needs discovery, review, or approval next—then open the exact project workspace to continue."
-            actions={<Link href="/projects/new"><Button icon={<Plus className="h-4 w-4" />}>New project</Button></Link>}
+            eyebrow="Projects"
+            title="Your projects"
+            description="Create something new or pick up where you left off."
+            actions={projects.length > 0 ? <Link href="/projects/new"><Button icon={<Plus className="h-4 w-4" />}>New project</Button></Link> : undefined}
           />
-          <div className="workspace-stat-strip mb-8">
+          {projects.length > 0 && <><div className="workspace-stat-strip mb-8">
             {[
               { label: "Total projects", value: projects.length },
               { label: "In progress", value: activeCount },
@@ -146,7 +146,7 @@ export default function DashboardPage() {
             ].map((item) => <div key={item.label}><p>{item.label}</p><strong>{item.value}</strong></div>)}
           </div>
 
-          {projects.length > 0 && <div className="mb-8"><ProjectHealthPanel project={projects[0]} /></div>}
+          <div className="mb-8"><ProjectHealthPanel project={projects[0]} /></div>
 
         <div className="mb-6 flex flex-col gap-3 border-b border-border pb-5 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -168,7 +168,7 @@ export default function DashboardPage() {
             </button>
           ))}
           </div>
-        </div>
+        </div></>}
 
         {projectsLoading ? (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" role="status" aria-live="polite" aria-label="Loading projects">
@@ -177,7 +177,7 @@ export default function DashboardPage() {
         ) : error ? (
           <Card className="border-error/25 bg-error/5"><p className="text-sm text-error" role="alert">{error}</p><Button className="mt-4" variant="outline" size="sm" onClick={() => void fetchProjects({ page: 0, size: 50 })}>Try again</Button></Card>
         ) : filteredProjects.length === 0 ? (
-          <div className="workspace-empty-state"><FolderOpen aria-hidden="true" /><h2>{projects.length === 0 ? "Start your first project" : "No projects in this view"}</h2><p>{projects.length === 0 ? "Create a workspace, describe the problem, and let the guided briefing collect the detail needed for review." : "Choose a different lifecycle filter to see more projects."}</p>{projects.length === 0 && <Link href="/projects/new"><Button size="sm" icon={<Plus className="h-4 w-4" />}>Create project</Button></Link>}</div>
+          <div className="workspace-empty-state"><FolderOpen aria-hidden="true" /><h2>{projects.length === 0 ? "Start your first project" : "No projects in this view"}</h2><p>{projects.length === 0 ? "Describe what you want to create, then get a first project plan." : "Choose a different lifecycle filter to see more projects."}</p>{projects.length === 0 && <Link href="/projects/new"><Button size="sm" icon={<Plus className="h-4 w-4" />}>Create project</Button></Link>}</div>
         ) : (
           <div className="space-y-5">
             <div className="hidden lg:block"><ProjectTable projects={filteredProjects} /></div>
