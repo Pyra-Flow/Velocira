@@ -1,68 +1,128 @@
 # Local environment and secrets
 .env
 .env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 !.env.example
 !.env.*.example
 *.pem
 *.key
+*.crt
+*.pfx
+*.p12
 
-# Temporary files and generated exports
+# Temporary files, logs, and generated exports
+tmp/
 /tmp/
-/backend/tmp/
+**/tmp/
 /output/
+/outputs/
 *.tmp
 *.bak
 *.swp
 *.swo
-
-# Local Codex and Graphify working state
-/.codex/
-/graphify-out/
-/.serena/
-/AGENTS.md
-
-# Node / Next.js
-node_modules/
-.next/
-out/
-coverage/
-*.tsbuildinfo
+*~
+.tmp*
+tmp*
+/assets/
+/artifacts/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+lerna-debug.log*
+
+# Local AI, agent working state, and graph tools
+**/.codex/
+**/graphify-out/
+**/.serena/
+/.agents/
+/.gemini/
+/.claude/
+/AGENTS.md
+
+# Node / Next.js / TypeScript (frontend)
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+out/
+**/out/
+dist/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
 .pnp
 .pnp.*
-.yarn/cache/
-.yarn/unplugged/
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
 .vercel/
 
-# Python
+# Python / FastAPI (ai-service)
 __pycache__/
 *.py[cod]
+*$py.class
 *.so
+.Python
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+ai-service/lib/
+ai-service/lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
+.tox/
+.nox/
+.hypothesis/
 .venv/
 venv/
+ENV/
 env/
 
-# Java / Maven / Spring
+# Java / Maven / Spring Boot (backend)
 target/
+**/target/
 build/
+**/build/
+!**/src/main/**/target/
+!**/src/test/**/target/
+!**/src/main/**/build/
+!**/src/test/**/build/
 *.class
 *.jar
 *.war
 *.ear
+*.nar
 hs_err_pid*
 replay_pid*.log
 *.mv.db
 *.trace.db
+.mvn/wrapper/maven-wrapper.jar
+*.springBeans
+*.sts4-cache
+.apt_generated
 
-# IDEs and operating systems
+# IDEs, text editors, and operating systems
 .idea/
 .vscode/
 *.iml
@@ -72,5 +132,13 @@ replay_pid*.log
 .project
 .settings/
 .factorypath
+*.sublime-project
+*.sublime-workspace
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
+desktop.ini
