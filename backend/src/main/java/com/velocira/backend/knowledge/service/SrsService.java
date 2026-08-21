@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
 @Service
 @RequiredArgsConstructor
 public class SrsService {
-    private static final Pattern REQUIREMENT_ID = Pattern.compile("^SRS-(FR|NFR)-[0-9]{3,}$");
+    private static final Pattern REQUIREMENT_ID = Pattern.compile("^SRS-(BR|FR|NFR|SEC|PRIV|DATA|API|UX|ACC|OPS|TEST)-[0-9]{3,}$");
     /** A stable, internal-only anchor used when the owner has not uploaded extra evidence. */
     private static final UUID PROJECT_BRIEF_SOURCE_ID = new UUID(0L, 1L);
     private static final UUID PROJECT_BRIEF_CHUNK_ID = new UUID(0L, 2L);
@@ -67,7 +67,7 @@ public class SrsService {
     }
 
     @Transactional
-    public KnowledgeDtos.SrsVersionResponse generate(UUID projectId, UUID ownerId, String profileKey) {
+    public KnowledgeDtos.SrsVersionResponse generate(UUID projectId, UUID ownerId, String profileKey, String generationMode) {
         ProjectEntity project = ownedProject(projectId, ownerId);
         interviewService.assertGenerationReady(projectId, ownerId);
         JsonNode brief = interviewSessionRepository.findByProjectIdAndOwnerId(projectId, ownerId)
@@ -97,9 +97,10 @@ public class SrsService {
 
         KnowledgeAiClient.SrsGenerationResult generated;
         try {
+            String normalizedGenerationMode = "STANDARD".equalsIgnoreCase(generationMode) ? "STANDARD" : "EXHAUSTIVE";
             generated = knowledgeAiClient.generate(new KnowledgeAiClient.SrsGenerationRequest(
                     projectId, project.getName(), project.getDescription(), project.getType().name(), brief,
-                    profile.getProfileKey(), profile.getName(), profile.getControls(), evidence));
+                    profile.getProfileKey(), profile.getName(), profile.getControls(), evidence, normalizedGenerationMode));
         } catch (KnowledgeAiException ex) {
             throw new KnowledgeStateException(ex.getMessage(), HttpStatus.SERVICE_UNAVAILABLE);
         }
@@ -118,7 +119,8 @@ public class SrsService {
         project.setProgress(0);
         projectRepository.save(project);
         auditService.record(ownerId, project.getOwner().getEmail(), AuditAction.SRS_GENERATED,
-                "Generated SRS version " + versionNumber + " using " + profile.getProfileKey() + " controls.");
+                "Generated " + ("STANDARD".equalsIgnoreCase(generationMode) ? "standard" : "exhaustive")
+                        + " SRS version " + versionNumber + " using " + profile.getProfileKey() + " controls.");
         return response(version);
     }
 

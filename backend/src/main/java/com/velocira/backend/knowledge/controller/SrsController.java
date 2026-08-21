@@ -38,7 +38,8 @@ public class SrsController {
     public ResponseEntity<ApiResponse<KnowledgeDtos.SrsVersionResponse>> generate(
             @AuthenticationPrincipal AuthenticatedUser principal, @PathVariable UUID projectId,
             @Valid @RequestBody KnowledgeDtos.GenerateSrsRequest request) {
-        KnowledgeDtos.SrsVersionResponse result = srsService.generate(projectId, principal.getUserId(), request.profileKey());
+        KnowledgeDtos.SrsVersionResponse result = srsService.generate(
+                projectId, principal.getUserId(), request.profileKey(), request.generationMode());
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.success(result, "SRS generated for review.", 201));
     }
 

@@ -17,7 +17,7 @@ public interface KnowledgeAiClient {
     record RetrievedEvidence(UUID sourceId, UUID chunkId, String sourceTitle, String content, double score) { }
     record SrsGenerationRequest(UUID projectId, String projectName, String projectDescription, String projectType,
                                 JsonNode confirmedBrief, String profileKey, String profileName, JsonNode controls,
-                                List<RetrievedEvidence> evidence) { }
+                                List<RetrievedEvidence> evidence, String generationMode) { }
     record SrsGenerationResult(String provider, String model, String promptVersion,
                                JsonNode artifact, JsonNode validation) { }
 }

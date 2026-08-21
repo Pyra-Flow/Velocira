@@ -13,6 +13,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -91,6 +92,7 @@ public class HttpKnowledgeAiClient implements KnowledgeAiClient {
         profile.put("key", request.profileKey());
         profile.put("name", request.profileName());
         profile.set("controls", request.controls());
+        payload.put("generation_mode", request.generationMode());
         ArrayNode evidence = payload.putArray("evidence");
         request.evidence().forEach(hit -> {
             ObjectNode item = evidence.addObject();
@@ -120,14 +122,16 @@ public class HttpKnowledgeAiClient implements KnowledgeAiClient {
             }
             HttpResponse<String> response = httpClient.send(request.build(), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != expectedStatus) {
-                throw new KnowledgeAiException(safeMessage(response.statusCode()));
+                throw new KnowledgeAiException(safeMessage(path, response.statusCode()));
             }
             return expectedStatus == 204 ? objectMapper.createObjectNode() : objectMapper.readTree(response.body());
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            throw new KnowledgeAiException("The evidence service did not respond in time.", ex);
+            throw new KnowledgeAiException(serviceLabel(path) + " was interrupted. No change was saved.", ex);
+        } catch (HttpTimeoutException ex) {
+            throw new KnowledgeAiException(serviceLabel(path) + " exceeded its configured processing time. No change was saved.", ex);
         } catch (IOException ex) {
-            throw new KnowledgeAiException("The evidence service is unavailable. No change was saved.", ex);
+            throw new KnowledgeAiException(serviceLabel(path) + " is unavailable. No change was saved.", ex);
         }
     }
 
@@ -140,9 +144,16 @@ public class HttpKnowledgeAiClient implements KnowledgeAiClient {
         return value == null || value.isBlank() ? UUID.randomUUID().toString() : value;
     }
 
-    private String safeMessage(int status) {
-        if (status == 422) return "The evidence was insufficient or did not pass the governed SRS quality checks.";
+    private String safeMessage(String path, int status) {
+        if (status == 422 && path.startsWith("/v1/srs/")) {
+            return "The generated SRS did not pass the governed quality checks. No change was saved.";
+        }
+        if (status == 422) return "The evidence was insufficient or failed validation.";
         if (status == 401 || status == 403) return "The internal evidence service is not securely configured.";
-        return "The evidence service is temporarily unavailable. No change was saved.";
+        return serviceLabel(path) + " is temporarily unavailable. No change was saved.";
+    }
+
+    private String serviceLabel(String path) {
+        return path.startsWith("/v1/srs/") ? "The SRS generation service" : "The evidence service";
     }
 }

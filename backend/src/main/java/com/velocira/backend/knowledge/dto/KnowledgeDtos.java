@@ -18,7 +18,8 @@ public final class KnowledgeDtos {
                                  Instant approvedAt, Instant createdAt) { }
     public record StandardsProfileResponse(String key, String name, String description, List<String> controls,
                                            String sourceLicense, String ownerName, LocalDate effectiveDate) { }
-    public record GenerateSrsRequest(@NotBlank @Size(max = 50) String profileKey) { }
+    public record GenerateSrsRequest(@NotBlank @Size(max = 50) String profileKey,
+                                     @jakarta.validation.constraints.Pattern(regexp = "STANDARD|EXHAUSTIVE") String generationMode) { }
     public record ReviewSrsRequest(@NotBlank @Size(max = 2000) String message) { }
     public record RequirementResponse(UUID id, String requirementId, String type, String priority,
                                       String statement, String rationale, String acceptanceCriteria,
