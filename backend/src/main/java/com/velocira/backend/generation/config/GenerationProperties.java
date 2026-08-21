@@ -26,7 +26,7 @@ public class GenerationProperties {
         /** Enables the isolated AI planner; the deterministic catalog remains the safe fallback. */
         private boolean discoveryPlannerEnabled = false;
         private Duration connectTimeout = Duration.ofSeconds(3);
-        private Duration readTimeout = Duration.ofSeconds(30);
+        private Duration readTimeout = Duration.ofMinutes(30);
     }
 
     @Getter
