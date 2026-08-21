@@ -9,6 +9,7 @@ import com.velocira.backend.interview.model.InterviewAnswerEntity;
 import com.velocira.backend.interview.model.InterviewCategory;
 import com.velocira.backend.interview.model.OpenQuestionStatus;
 import com.velocira.backend.interview.model.RiskLevel;
+import com.velocira.backend.project.model.ProjectEntity;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -51,7 +52,7 @@ public class DiscoveryReadinessService {
     private final ObjectMapper objectMapper;
     private final DiscoveryQuestionCatalog questionCatalog;
 
-    public Assessment assess(List<InterviewAnswerEntity> answers) {
+    public Assessment assess(ProjectEntity project, List<InterviewAnswerEntity> answers) {
         Map<InterviewCategory, InterviewAnswerEntity> current = new EnumMap<>(InterviewCategory.class);
         answers.stream()
                 .filter(InterviewAnswerEntity::isCurrent)
@@ -64,22 +65,31 @@ public class DiscoveryReadinessService {
         int requiredTotal = 0;
 
         ObjectNode categoryStates = objectMapper.createObjectNode();
+        var requiredCategories = questionCatalog.requiredCategories(project, answers);
         for (DiscoveryQuestionCatalog.QuestionDefinition question : questionCatalog.ordered()) {
             InterviewAnswerEntity answer = current.get(question.category());
             String state = answer == null ? "MISSING" : answer.getDisposition().name();
             categoryStates.put(question.category().name(), state);
-            if (!question.required()) {
+            if (!requiredCategories.contains(question.category())) {
                 continue;
             }
 
             requiredTotal++;
             if (answer != null && answer.getDisposition() == InterviewAnswerDisposition.ANSWERED) {
                 addressedRequired++;
-                answeredRequired++;
-                findings.add(new Finding(
-                        "required-" + question.key(), question.category(), question.questionText(),
-                        "This required category has a user-provided answer.", question.riskLevel(),
-                        OpenQuestionStatus.RESOLVED, true));
+                if (isLowInformation(answer.getAnswerText()) || isExplicitlyUndecided(answer)) {
+                    blockers.add("Clarify the tentative " + display(question.category()) + " answer.");
+                    findings.add(new Finding(
+                            "incomplete-" + question.key(), question.category(), question.questionText(),
+                            "The answer is tentative, explicitly undecided, or too brief to support a requirement without inventing detail.",
+                            RiskLevel.HIGH, OpenQuestionStatus.OPEN, true));
+                } else {
+                    answeredRequired++;
+                    findings.add(new Finding(
+                            "required-" + question.key(), question.category(), question.questionText(),
+                            "This required category has a user-provided answer.", question.riskLevel(),
+                            OpenQuestionStatus.RESOLVED, true));
+                }
             } else if (answer == null) {
                 blockers.add("Answer the " + display(question.category()) + " question.");
                 findings.add(new Finding(
@@ -179,5 +189,27 @@ public class DiscoveryReadinessService {
 
     private String display(InterviewCategory category) {
         return category.name().toLowerCase(Locale.ROOT).replace('_', ' ');
+    }
+
+    private boolean isLowInformation(String value) {
+        if (value == null || value.isBlank()) {
+            return true;
+        }
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        return normalized.length() < 12
+                || normalized.matches("^(tbd|unknown|not sure|unsure|maybe|not decided( yet)?|to be decided|n/?a)[.!]?$" );
+    }
+
+    private boolean isExplicitlyUndecided(InterviewAnswerEntity answer) {
+        JsonNode selected = answer.getEvidence().path("selectedOptionKeys");
+        if (!selected.isArray()) {
+            return false;
+        }
+        for (JsonNode key : selected) {
+            if (key.isTextual() && key.asText().equals("not-decided")) {
+                return true;
+            }
+        }
+        return false;
     }
 }

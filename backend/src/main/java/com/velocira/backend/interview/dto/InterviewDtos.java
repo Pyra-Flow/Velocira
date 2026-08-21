@@ -42,6 +42,13 @@ public final class InterviewDtos {
             String description) {
     }
 
+    public record CandidateScoreResponse(
+            String key,
+            InterviewCategory category,
+            int score,
+            List<String> reasons) {
+    }
+
     public record QuestionResponse(
             String questionKey,
             InterviewCategory category,
@@ -49,7 +56,15 @@ public final class InterviewDtos {
             String whyWeAsk,
             RiskLevel riskLevel,
             boolean allowsMultiple,
-            List<ChoiceOptionResponse> options) {
+            List<ChoiceOptionResponse> options,
+            String selectionReason,
+            String missingRequirement,
+            List<String> sourceContext,
+            List<String> confirmedContextUsed,
+            List<String> assumptionsToValidate,
+            List<CandidateScoreResponse> candidateScores,
+            String planner,
+            String model) {
     }
 
     public record AnswerResponse(
@@ -66,7 +81,15 @@ public final class InterviewDtos {
             boolean allowsMultiple,
             List<ChoiceOptionResponse> options,
             List<String> selectedOptionKeys,
-            String customAnswerText) {
+            String customAnswerText,
+            String selectionReason,
+            String missingRequirement,
+            List<String> sourceContext,
+            List<String> confirmedContextUsed,
+            List<String> assumptionsToValidate,
+            List<CandidateScoreResponse> candidateScores,
+            String planner,
+            String model) {
     }
 
     public record AssumptionResponse(

@@ -64,6 +64,12 @@ public class InterviewSessionEntity extends BaseEntity {
     @Builder.Default
     private JsonNode readinessSnapshot = JsonNodeFactory.instance.objectNode();
 
+    /** Current validated planner decision shown to the owner and copied into answer evidence. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "current_question_plan", nullable = false)
+    @Builder.Default
+    private JsonNode currentQuestionPlan = JsonNodeFactory.instance.objectNode();
+
     @Column(name = "brief_version", nullable = false)
     @Builder.Default
     private int briefVersion = 0;

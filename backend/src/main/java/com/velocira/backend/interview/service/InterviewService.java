@@ -90,13 +90,16 @@ public class InterviewService {
             auditService.record(ownerId, project.getOwner().getEmail(), AuditAction.INTERVIEW_REOPENED,
                     "Restored the owner questions for project: " + project.getName());
         }
+        ensureCurrentQuestionPlan(session);
         return response(session);
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public InterviewDtos.SessionResponse summary(UUID projectId, UUID ownerId) {
         ownedProject(projectId, ownerId);
-        return response(requiredSession(projectId, ownerId));
+        InterviewSessionEntity session = requiredSession(projectId, ownerId);
+        ensureCurrentQuestionPlan(session);
+        return response(session);
     }
 
     @Transactional(readOnly = true)
@@ -116,8 +119,11 @@ public class InterviewService {
         InterviewSessionEntity session = lockedSession(projectId, ownerId);
         ProjectEntity project = session.getProject();
         ensureInterviewAllowed(project);
-        DiscoveryQuestionCatalog.QuestionDefinition question = questionCatalog.tailorForProject(
-                questionCatalog.requireByKey(request.questionKey().trim()), project);
+        InterviewDtos.QuestionResponse plannedQuestion = currentQuestionPlan(session);
+        DiscoveryQuestionCatalog.QuestionDefinition question = plannedQuestion != null
+                && plannedQuestion.questionKey().equals(request.questionKey().trim())
+                ? questionCatalog.fromResponse(plannedQuestion, project)
+                : questionCatalog.tailorForProject(questionCatalog.requireByKey(request.questionKey().trim()), project);
         validateAnswer(question, request);
         reopenForEdit(session, project);
 
@@ -141,7 +147,7 @@ public class InterviewService {
                 .revisionNumber(revision)
                 .current(true)
                 .source("USER")
-                .evidence(answerEvidence(question, request))
+                .evidence(answerEvidence(question, request, plannedQuestion))
                 .build();
         answer = answerRepository.save(answer);
         refreshDerivedEvidence(session, answer);
@@ -186,15 +192,10 @@ public class InterviewService {
         InterviewSessionEntity session = lockedSession(projectId, ownerId);
         ProjectEntity project = session.getProject();
         ensureInterviewAllowed(project);
-        session.setStatus(InterviewSessionStatus.IN_PROGRESS);
-        session.setConfirmedAt(null);
-        session.setReopenedAt(Instant.now());
-        sessionRepository.save(session);
-        project.setStatus(ProjectStatus.DISCOVERY);
-        project.setProgress(0);
-        projectRepository.save(project);
+        DiscoveryReadinessService.Assessment assessment = rebuildDerivedState(session);
         auditService.record(ownerId, project.getOwner().getEmail(), AuditAction.INTERVIEW_REOPENED,
-                "Reopened discovery brief for project: " + project.getName());
+                "Reviewed discovery brief for project: " + project.getName()
+                        + (assessment.generationReady() ? " (answers remain generation ready)" : " (follow-up required)"));
         return response(session);
     }
 
@@ -204,16 +205,20 @@ public class InterviewService {
         InterviewSessionEntity session = sessionRepository.findByProjectIdAndOwnerId(projectId, ownerId)
                 .orElseThrow(() -> new InterviewStateException(
                         "Complete the required discovery questions before requesting generation."));
-        boolean ready = session.getReadinessSnapshot().path("generationReady").asBoolean(false);
-        if (session.getStatus() != InterviewSessionStatus.CONFIRMED || !ready) {
-            throw new InterviewStateException(
-                    "Generation is blocked until the required discovery answers have no material unanswered or high-risk gaps.");
+        List<InterviewAnswerEntity> answers = answerRepository
+                .findBySessionIdAndCurrentTrueOrderByCreatedAtAsc(session.getId());
+        DiscoveryReadinessService.Assessment assessment = readinessService.assess(session.getProject(), answers);
+        if (!assessment.generationReady()) {
+            String detail = assessment.blockers().isEmpty()
+                    ? "Complete the required discovery questions before requesting generation."
+                    : String.join(" ", assessment.blockers());
+            throw new InterviewStateException("Generation is blocked: " + detail);
         }
     }
 
     private DiscoveryReadinessService.Assessment rebuildDerivedState(InterviewSessionEntity session) {
         List<InterviewAnswerEntity> answers = answerRepository.findBySessionIdAndCurrentTrueOrderByCreatedAtAsc(session.getId());
-        DiscoveryReadinessService.Assessment assessment = readinessService.assess(answers);
+        DiscoveryReadinessService.Assessment assessment = readinessService.assess(session.getProject(), answers);
         syncOpenQuestions(session, answers, assessment.findings());
         ObjectNode brief = assessment.canonicalBrief().deepCopy();
         brief.put("projectId", session.getProject().getId().toString());
@@ -247,6 +252,7 @@ public class InterviewService {
                 projectRepository.save(project);
             }
         }
+        refreshCurrentQuestionPlan(session, answers);
         sessionRepository.save(session);
         return assessment;
     }
@@ -293,6 +299,9 @@ public class InterviewService {
             List<DiscoveryReadinessService.Finding> findings) {
         Map<InterviewCategory, InterviewAnswerEntity> byCategory = answers.stream()
                 .collect(Collectors.toMap(InterviewAnswerEntity::getCategory, Function.identity(), (left, right) -> right));
+        Set<String> currentFindingKeys = findings.stream()
+                .map(DiscoveryReadinessService.Finding::key)
+                .collect(Collectors.toSet());
         for (DiscoveryReadinessService.Finding finding : findings) {
             OpenQuestionEntity openQuestion = openQuestionRepository
                     .findBySessionIdAndQuestionKey(session.getId(), finding.key())
@@ -311,14 +320,23 @@ public class InterviewService {
             openQuestion.setMaterial(finding.material());
             openQuestionRepository.save(openQuestion);
         }
+        openQuestionRepository.findBySessionIdOrderByRiskLevelDescCreatedAtAsc(session.getId()).stream()
+                .filter(question -> "READINESS_RULE".equals(question.getOrigin()))
+                .filter(question -> !currentFindingKeys.contains(question.getQuestionKey()))
+                .forEach(question -> {
+                    question.setStatus(OpenQuestionStatus.RESOLVED);
+                    question.setMaterial(false);
+                    question.setReason("This gap is not required for the current project complexity profile.");
+                    openQuestionRepository.save(question);
+                });
     }
 
     private InterviewDtos.SessionResponse response(InterviewSessionEntity session) {
         List<InterviewAnswerEntity> currentAnswers = answerRepository.findBySessionIdAndCurrentTrueOrderByCreatedAtAsc(session.getId());
-        DiscoveryReadinessService.Assessment assessment = readinessService.assess(currentAnswers);
+        DiscoveryReadinessService.Assessment assessment = readinessService.assess(session.getProject(), currentAnswers);
         List<OpenQuestionEntity> openQuestions = openQuestionRepository
                 .findBySessionIdOrderByRiskLevelDescCreatedAtAsc(session.getId());
-        InterviewDtos.QuestionResponse nextQuestion = questionPlanner.nextQuestion(session, currentAnswers, openQuestions);
+        InterviewDtos.QuestionResponse nextQuestion = currentQuestionPlan(session);
         return new InterviewDtos.SessionResponse(
                 session.getId(),
                 session.getProject().getId(),
@@ -338,11 +356,22 @@ public class InterviewService {
 
     private InterviewDtos.AnswerResponse toAnswerResponse(InterviewAnswerEntity answer) {
         DiscoveryQuestionCatalog.QuestionDefinition question = questionCatalog.requireByKey(answer.getQuestionKey());
+        InterviewDtos.QuestionResponse plan = answerQuestionPlan(answer);
+        List<InterviewDtos.ChoiceOptionResponse> options = plan == null
+                ? question.options().stream().map(DiscoveryQuestionCatalog.ChoiceOption::toResponse).toList()
+                : plan.options();
         return new InterviewDtos.AnswerResponse(answer.getId(), answer.getQuestionKey(), answer.getCategory(),
                 answer.getQuestionText(), answer.getWhyWeAsk(), answer.getDisposition(), answer.getAnswerText(),
                 answer.getRevisionNumber(), answer.isCurrent(), answer.getCreatedAt(), question.allowsMultiple(),
-                question.options().stream().map(DiscoveryQuestionCatalog.ChoiceOption::toResponse).toList(),
-                selectedOptionKeys(answer), customAnswerText(answer));
+                options, selectedOptionKeys(answer), customAnswerText(answer),
+                plan == null ? null : plan.selectionReason(),
+                plan == null ? null : plan.missingRequirement(),
+                plan == null ? List.of() : plan.sourceContext(),
+                plan == null ? List.of() : plan.confirmedContextUsed(),
+                plan == null ? List.of() : plan.assumptionsToValidate(),
+                plan == null ? List.of() : plan.candidateScores(),
+                plan == null ? null : plan.planner(),
+                plan == null ? null : plan.model());
     }
 
     private InterviewDtos.AssumptionResponse toAssumptionResponse(AssumptionEntity assumption) {
@@ -446,6 +475,9 @@ public class InterviewService {
         if (!hasCustomAnswer && selectedOptionKeys.isEmpty()) {
             throw new InterviewStateException("Choose an answer or add a custom response. You can also choose Unknown or Skip so the gap remains visible.");
         }
+        if (selectedOptionKeys.contains("not-decided") && selectedOptionKeys.size() > 1) {
+            throw new InterviewStateException("Not decided yet cannot be combined with a confirmed decision.");
+        }
         if (!question.allowsMultiple() && selectedOptionKeys.size() > 1) {
             throw new InterviewStateException("This question accepts one suggested choice. Add details in the custom response if needed.");
         }
@@ -480,7 +512,8 @@ public class InterviewService {
 
     private JsonNode answerEvidence(
             DiscoveryQuestionCatalog.QuestionDefinition question,
-            InterviewDtos.AnswerRequest request) {
+            InterviewDtos.AnswerRequest request,
+            InterviewDtos.QuestionResponse plannedQuestion) {
         ObjectNode evidence = objectMapper.createObjectNode();
         evidence.put("source", "user_interview");
         evidence.put("disposition", request.disposition().name());
@@ -497,7 +530,55 @@ public class InterviewService {
                 .forEach(option -> selectedOptions.addObject()
                         .put("key", option.key())
                         .put("label", option.label()));
+        if (plannedQuestion != null && plannedQuestion.questionKey().equals(question.key())) {
+            evidence.set("questionPlan", objectMapper.valueToTree(plannedQuestion));
+        }
         return evidence;
+    }
+
+    private void ensureCurrentQuestionPlan(InterviewSessionEntity session) {
+        if (session.getCurrentQuestionPlan() != null && !session.getCurrentQuestionPlan().isEmpty()) {
+            return;
+        }
+        List<InterviewAnswerEntity> answers = answerRepository
+                .findBySessionIdAndCurrentTrueOrderByCreatedAtAsc(session.getId());
+        refreshCurrentQuestionPlan(session, answers);
+        sessionRepository.save(session);
+    }
+
+    private void refreshCurrentQuestionPlan(
+            InterviewSessionEntity session,
+            List<InterviewAnswerEntity> answers) {
+        List<OpenQuestionEntity> openQuestions = openQuestionRepository
+                .findBySessionIdOrderByRiskLevelDescCreatedAtAsc(session.getId());
+        InterviewDtos.QuestionResponse planned = questionPlanner.nextQuestion(session, answers, openQuestions);
+        session.setCurrentQuestionPlan(planned == null
+                ? objectMapper.createObjectNode()
+                : objectMapper.valueToTree(planned));
+    }
+
+    private InterviewDtos.QuestionResponse currentQuestionPlan(InterviewSessionEntity session) {
+        JsonNode plan = session.getCurrentQuestionPlan();
+        if (plan == null || plan.isEmpty()) {
+            return null;
+        }
+        try {
+            return normalizeQuestionPlan(objectMapper.treeToValue(plan, InterviewDtos.QuestionResponse.class));
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    private InterviewDtos.QuestionResponse answerQuestionPlan(InterviewAnswerEntity answer) {
+        JsonNode plan = answer.getEvidence().path("questionPlan");
+        if (!plan.isObject() || plan.isEmpty()) {
+            return null;
+        }
+        try {
+            return normalizeQuestionPlan(objectMapper.treeToValue(plan, InterviewDtos.QuestionResponse.class));
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private List<String> selectedOptionKeys(InterviewAnswerEntity answer) {
@@ -512,6 +593,20 @@ public class InterviewService {
             }
         });
         return List.copyOf(keys);
+    }
+
+    private InterviewDtos.QuestionResponse normalizeQuestionPlan(InterviewDtos.QuestionResponse plan) {
+        return new InterviewDtos.QuestionResponse(
+                plan.questionKey(), plan.category(), plan.questionText(), plan.whyWeAsk(), plan.riskLevel(),
+                plan.allowsMultiple(), plan.options() == null ? List.of() : plan.options(),
+                plan.selectionReason() == null ? "Persisted discovery question." : plan.selectionReason(),
+                plan.missingRequirement() == null ? "A requirement needed by downstream documents." : plan.missingRequirement(),
+                plan.sourceContext() == null ? List.of() : plan.sourceContext(),
+                plan.confirmedContextUsed() == null ? List.of() : plan.confirmedContextUsed(),
+                plan.assumptionsToValidate() == null ? List.of() : plan.assumptionsToValidate(),
+                plan.candidateScores() == null ? List.of() : plan.candidateScores(),
+                plan.planner() == null ? "persisted-question-plan" : plan.planner(),
+                plan.model() == null ? "unknown" : plan.model());
     }
 
     private String customAnswerText(InterviewAnswerEntity answer) {
