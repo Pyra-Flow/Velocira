@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -179,14 +179,65 @@ class DiscoveryProjectContext(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=20_000)
     type: str = Field(min_length=1, max_length=100)
+    industry: str | None = Field(default=None, max_length=200)
+    target_audience: str | None = Field(default=None, max_length=1_000)
+    tech_stack: str | None = Field(default=None, max_length=1_000)
+    team_size: int | None = Field(default=None, ge=1, le=100_000)
 
 
 class DiscoveryAnswerInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    question_key: str | None = Field(default=None, max_length=120)
     category: str = Field(min_length=1, max_length=60)
     disposition: Literal["ANSWERED", "UNKNOWN", "SKIPPED"]
+    question_text: str | None = Field(default=None, max_length=2_000)
     answer_text: str | None = Field(default=None, max_length=12_000)
+    selected_option_keys: list[str] = Field(default_factory=list, max_length=12)
+
+
+class DiscoveryOpenQuestionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    key: str = Field(min_length=1, max_length=120)
+    category: str = Field(min_length=1, max_length=60)
+    question_text: str = Field(min_length=1, max_length=2_000)
+    reason: str = Field(min_length=1, max_length=2_000)
+    risk_level: Literal["LOW", "MEDIUM", "HIGH"]
+    material: bool = True
+
+
+class DiscoveryEvidenceInput(BaseModel):
+    """A bounded owner-approved excerpt. Its content is always untrusted data."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    source_id: UUID
+    title: str = Field(min_length=1, max_length=255)
+    excerpt: str = Field(min_length=1, max_length=4_000)
+
+
+class DiscoveryChoiceOption(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    key: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,79}$")
+    label: str = Field(min_length=1, max_length=120)
+    description: str = Field(min_length=1, max_length=300)
+
+
+class DiscoveryCandidateQuestion(BaseModel):
+    """Server-owned question boundary the model may tailor but not expand."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    key: str = Field(min_length=1, max_length=120)
+    category: str = Field(min_length=1, max_length=60)
+    base_question: str = Field(min_length=1, max_length=2_000)
+    why_we_ask: str = Field(min_length=1, max_length=2_000)
+    risk_level: Literal["LOW", "MEDIUM", "HIGH"]
+    required: bool
+    allows_multiple: bool
+    options: list[DiscoveryChoiceOption] = Field(default_factory=list, max_length=8)
 
 
 class DiscoveryPlanningRequest(BaseModel):
@@ -197,6 +248,10 @@ class DiscoveryPlanningRequest(BaseModel):
     project: DiscoveryProjectContext
     answers: list[DiscoveryAnswerInput] = Field(default_factory=list, max_length=30)
     visible_open_question_keys: list[str] = Field(default_factory=list, max_length=40)
+    open_questions: list[DiscoveryOpenQuestionInput] = Field(default_factory=list, max_length=40)
+    evidence: list[DiscoveryEvidenceInput] = Field(default_factory=list, max_length=8)
+    candidate_questions: list[DiscoveryCandidateQuestion] = Field(default_factory=list, max_length=30)
+    source_anchors: list[str] = Field(default_factory=list, max_length=100)
 
 
 class DiscoveryQuestion(BaseModel):
@@ -207,13 +262,33 @@ class DiscoveryQuestion(BaseModel):
     question_text: str = Field(min_length=1, max_length=2_000)
     why_we_ask: str = Field(min_length=1, max_length=2_000)
     risk_level: Literal["LOW", "MEDIUM", "HIGH"]
+    allows_multiple: bool = False
+    options: list[DiscoveryChoiceOption] = Field(default_factory=list, max_length=8)
+
+
+class DiscoveryCandidateScore(BaseModel):
+    """Reviewable information-value score for a server-owned candidate."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    key: str = Field(min_length=1, max_length=120)
+    category: str = Field(min_length=1, max_length=60)
+    score: int
+    reasons: list[str] = Field(default_factory=list, max_length=8)
 
 
 class DiscoveryPlanningResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     planner: str
+    model: str
     next_question: DiscoveryQuestion | None
+    selection_reason: str | None = Field(default=None, max_length=2_000)
+    missing_requirement: str | None = Field(default=None, max_length=2_000)
+    source_context: list[str] = Field(default_factory=list, max_length=20)
+    confirmed_context_used: list[str] = Field(default_factory=list, max_length=12)
+    assumptions_to_validate: list[str] = Field(default_factory=list, max_length=12)
+    candidate_scores: list[DiscoveryCandidateScore] = Field(default_factory=list, max_length=30)
     suggestions: list[str] = Field(default_factory=list, max_length=10)
     assumptions: list[str] = Field(default_factory=list, max_length=10)
 
@@ -288,14 +363,86 @@ class SrsCitation(BaseModel):
     label: str = Field(min_length=1, max_length=255)
 
 
+class SrsNarrativeSection(BaseModel):
+    """One reviewable chapter in the compiled master specification."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    id: str = Field(pattern=r"^[A-Z][A-Z0-9_-]{1,49}$")
+    title: str = Field(min_length=2, max_length=180)
+    purpose: str = Field(min_length=8, max_length=600)
+    content: str = Field(min_length=20, max_length=12_000)
+    source_status: Literal["CONFIRMED", "DERIVED", "RECOMMENDED", "ASSUMED", "UNRESOLVED"]
+
+
+class SrsWorkflow(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    id: str = Field(pattern=r"^WF-[0-9]{3,}$")
+    title: str = Field(min_length=2, max_length=180)
+    actors: list[str] = Field(default_factory=list, max_length=20)
+    trigger: str = Field(min_length=2, max_length=1_000)
+    preconditions: list[str] = Field(default_factory=list, max_length=20)
+    main_flow: list[str] = Field(min_length=1, max_length=40)
+    alternate_flows: list[str] = Field(default_factory=list, max_length=30)
+    failure_recovery: list[str] = Field(default_factory=list, max_length=30)
+    postconditions: list[str] = Field(default_factory=list, max_length=20)
+    requirement_ids: list[str] = Field(default_factory=list, max_length=40)
+
+
+class SrsQualityScenario(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    id: str = Field(pattern=r"^QS-[0-9]{3,}$")
+    quality_attribute: str = Field(min_length=2, max_length=120)
+    source: str = Field(min_length=2, max_length=500)
+    stimulus: str = Field(min_length=2, max_length=1_000)
+    environment: str = Field(min_length=2, max_length=1_000)
+    artifact: str = Field(min_length=2, max_length=500)
+    response: str = Field(min_length=2, max_length=1_500)
+    response_measure: str = Field(min_length=2, max_length=1_000)
+    status: Literal["CONFIRMED", "RECOMMENDED", "UNRESOLVED"]
+
+
+class SrsRegisterItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    id: str = Field(pattern=r"^[A-Z][A-Z0-9_-]{1,49}$")
+    category: str = Field(min_length=2, max_length=100)
+    title: str = Field(min_length=2, max_length=180)
+    description: str = Field(min_length=8, max_length=2_000)
+    status: Literal["CONFIRMED", "DERIVED", "RECOMMENDED", "ASSUMED", "UNRESOLVED", "OUT_OF_SCOPE"]
+    owner: str = Field(default="Project owner", min_length=2, max_length=120)
+    source_detail: str = Field(min_length=5, max_length=1_000)
+
+
+class SrsDiagram(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    id: str = Field(pattern=r"^DGM-[0-9]{3,}$")
+    type: Literal["C4_CONTEXT", "CONTAINER", "WORKFLOW", "SEQUENCE", "STATE", "ERD", "DEPLOYMENT", "DATA_FLOW", "THREAT_BOUNDARY"]
+    title: str = Field(min_length=2, max_length=180)
+    notation: Literal["MERMAID", "PLANTUML"]
+    source: str = Field(min_length=10, max_length=20_000)
+    rationale: str = Field(min_length=8, max_length=1_000)
+    status: Literal["CONFIRMED", "DERIVED", "RECOMMENDED", "UNRESOLVED"]
+
+
 class SrsRequirement(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    id: str = Field(pattern=r"^SRS-(?:FR|NFR)-[0-9]{3,}$")
-    type: Literal["FUNCTIONAL", "NON_FUNCTIONAL"]
+    id: str = Field(pattern=r"^SRS-(?:BR|FR|NFR|SEC|PRIV|DATA|API|UX|ACC|OPS|TEST)-[0-9]{3,}$")
+    type: Literal[
+        "BUSINESS", "FUNCTIONAL", "NON_FUNCTIONAL", "SECURITY", "PRIVACY",
+        "DATA", "API", "UX", "ACCESSIBILITY", "OPERATIONS", "TEST",
+    ]
+    title: str = Field(default="Requirement", min_length=2, max_length=180)
     priority: Literal["MUST", "SHOULD", "COULD"]
+    status: Literal["CONFIRMED", "RECOMMENDED", "ASSUMED", "UNRESOLVED"] = "CONFIRMED"
     statement: str = Field(min_length=20, max_length=4_000)
     rationale: str = Field(min_length=8, max_length=2_000)
     acceptance_criteria: list[str] = Field(min_length=1, max_length=10)
+    actors: list[str] = Field(default_factory=list, max_length=20)
+    preconditions: list[str] = Field(default_factory=list, max_length=20)
+    trigger: str = Field(default="Confirmed workflow event", min_length=2, max_length=1_000)
+    failure_behavior: str = Field(default="Failure behavior requires review.", min_length=8, max_length=2_000)
+    data_involved: list[str] = Field(default_factory=list, max_length=30)
+    dependencies: list[str] = Field(default_factory=list, max_length=30)
+    risks: list[str] = Field(default_factory=list, max_length=30)
     source_kind: Literal["CITATION", "ASSUMPTION"]
     source_detail: str = Field(min_length=5, max_length=2_000)
     verification_method: Literal["TEST", "ANALYSIS", "INSPECTION", "DEMONSTRATION"]
@@ -304,13 +451,27 @@ class SrsRequirement(BaseModel):
 
 class SrsArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    schema_version: Literal["1.0"]
+    schema_version: Literal["1.0", "2.0"]
     title: str = Field(min_length=1, max_length=300)
+    document_control: dict[str, str] = Field(default_factory=dict)
+    generation_manifest: dict[str, Any] = Field(default_factory=dict)
+    executive_summary: str = Field(default="Pending compiled executive summary.", min_length=20, max_length=8_000)
     scope: str = Field(min_length=20, max_length=6_000)
+    objectives: list[str] = Field(default_factory=list, max_length=30)
+    stakeholders: list[str] = Field(default_factory=list, max_length=40)
+    definitions: list[SrsRegisterItem] = Field(default_factory=list, max_length=80)
+    source_registry: list[SrsRegisterItem] = Field(default_factory=list, max_length=40)
     exclusions: list[str] = Field(default_factory=list, max_length=20)
     assumptions: list[str] = Field(default_factory=list, max_length=30)
     open_questions: list[str] = Field(default_factory=list, max_length=30)
-    requirements: list[SrsRequirement] = Field(min_length=1, max_length=100)
+    narrative_sections: list[SrsNarrativeSection] = Field(default_factory=list, max_length=40)
+    workflows: list[SrsWorkflow] = Field(default_factory=list, max_length=40)
+    quality_scenarios: list[SrsQualityScenario] = Field(default_factory=list, max_length=60)
+    risks: list[SrsRegisterItem] = Field(default_factory=list, max_length=80)
+    decisions: list[SrsRegisterItem] = Field(default_factory=list, max_length=80)
+    standards_applied: list[SrsRegisterItem] = Field(default_factory=list, max_length=80)
+    diagrams: list[SrsDiagram] = Field(default_factory=list, max_length=30)
+    requirements: list[SrsRequirement] = Field(min_length=1, max_length=240)
 
 
 class SrsGenerationRequest(BaseModel):
@@ -321,6 +482,7 @@ class SrsGenerationRequest(BaseModel):
     confirmed_brief: dict
     profile: SrsProfileInput
     evidence: list[RetrievalHit] = Field(min_length=1, max_length=16)
+    generation_mode: Literal["STANDARD", "EXHAUSTIVE"] = "EXHAUSTIVE"
 
 
 class SrsValidation(BaseModel):
@@ -328,6 +490,11 @@ class SrsValidation(BaseModel):
     valid: bool
     issues: list[str] = Field(default_factory=list, max_length=100)
     citation_coverage: float = Field(ge=0, le=100)
+    requirement_count: int = Field(default=0, ge=0)
+    section_count: int = Field(default=0, ge=0)
+    acceptance_coverage: float = Field(default=0, ge=0, le=100)
+    traceability_coverage: float = Field(default=0, ge=0, le=100)
+    quality_score: float = Field(default=0, ge=0, le=100)
 
 
 class SrsGenerationResponse(BaseModel):

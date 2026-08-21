@@ -14,7 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.config import Settings
-from app.discovery import plan_for_selected_key, plan_next_question, unanswered_questions
+from app.discovery import plan_for_generated_question, plan_next_question, unanswered_questions
 from app.errors import AiServiceError, ErrorCode
 from app.models import (
     ArtifactResponse,
@@ -240,23 +240,65 @@ def create_app(
         correlation_id: str = request.state.correlation_id
         result = plan_next_question(payload)
         provider_instance = request.app.state.provider
-        planner = getattr(provider_instance, "plan_discovery_key", None)
+        planner = getattr(provider_instance, "plan_discovery_question", None)
         if callable(planner) and result.next_question is not None:
             try:
-                selected_key = await planner(
+                selected_key = result.next_question.key
+                candidates = [
+                    question.model_dump(mode="json")
+                    for question in payload.candidate_questions
+                    if question.key == selected_key
+                ]
+                if not candidates:
+                    candidates = [
+                        {
+                            "key": question.key,
+                            "category": question.category,
+                            "base_question": question.question_text,
+                            "why_we_ask": question.why_we_ask,
+                            "risk_level": question.risk_level,
+                            "required": True,
+                            "allows_multiple": question.allows_multiple,
+                            "options": [option.model_dump(mode="json") for option in question.options],
+                        }
+                        for question in unanswered_questions(payload)
+                        if question.key == selected_key
+                    ]
+                source_anchors = ["project:title", "project:description", "project:type"]
+                if payload.project.industry:
+                    source_anchors.append("project:industry")
+                if payload.project.target_audience:
+                    source_anchors.append("project:target-audience")
+                if payload.project.tech_stack:
+                    source_anchors.append("project:tech-stack")
+                if payload.project.team_size:
+                    source_anchors.append("project:team-size")
+                source_anchors.extend(
+                    f"answer:{answer.question_key or answer.category.lower()}" for answer in payload.answers
+                )
+                source_anchors.extend(f"open-question:{item.key}" for item in payload.open_questions)
+                source_anchors.extend(f"evidence:{item.source_id}" for item in payload.evidence)
+                planned = await planner(
                     project=payload.project.model_dump(mode="json"),
                     answers=[answer.model_dump(mode="json") for answer in payload.answers],
-                    allowed_question_keys=[question.key for question in unanswered_questions(payload)],
+                    open_questions=[item.model_dump(mode="json") for item in payload.open_questions],
+                    evidence=[item.model_dump(mode="json") for item in payload.evidence],
+                    candidate_questions=candidates,
+                    source_anchors=list(dict.fromkeys(source_anchors)),
                     correlation_id=correlation_id,
                 )
-                if selected_key:
-                    result = plan_for_selected_key(payload, selected_key, planner="gemini-catalog-selector-v1")
-            except AiServiceError as exc:
+                result = plan_for_generated_question(
+                    payload,
+                    planned.output,
+                    planner="gemini-context-planner-v3",
+                    model=planned.model or provider_instance.model,
+                )
+            except (AiServiceError, ValueError) as exc:
                 # Free-tier quota or provider outages never stop discovery: the
                 # deterministic catalog remains an explicit safe fallback.
                 logger.warning(
-                    "discovery_planner_fallback code=%s correlation_id=%s",
-                    exc.code.value,
+                    "discovery_planner_fallback reason=%s correlation_id=%s",
+                    exc.code.value if isinstance(exc, AiServiceError) else "invalid_contextual_question",
                     correlation_id,
                 )
         logger.info(
@@ -316,7 +358,7 @@ def create_app(
         return SrsGenerationResponse(
             provider=request.app.state.provider.name,
             model=model,
-            prompt_version="srs-governed-v1",
+            prompt_version="srs-compiler-v2",
             artifact=artifact,
             validation=validation,
         )

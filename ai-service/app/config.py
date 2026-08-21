@@ -17,10 +17,14 @@ class Settings:
 
     environment: str = "development"
     provider: str = "deterministic"
+    # Used for SRS and other generated project documents.
     model: str = "velocira-deterministic-v1"
+    # Used only to select the next server-owned discovery question.
+    discovery_model: str = "velocira-deterministic-v1"
     fallback_model: str = ""
     gemini_api_key: str = ""
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    provider_timeout_seconds: float = 180.0
     internal_service_token: str = ""
     max_input_bytes: int = 65_536
     log_level: str = "INFO"
@@ -48,13 +52,26 @@ class Settings:
         if embedding_dimensions < 128 or embedding_dimensions > 3072:
             raise ValueError("AI_SERVICE_EMBEDDING_DIMENSIONS must be between 128 and 3072")
 
+        raw_provider_timeout = os.getenv("AI_SERVICE_PROVIDER_TIMEOUT_SECONDS", "180")
+        try:
+            provider_timeout_seconds = float(raw_provider_timeout)
+        except ValueError as exc:
+            raise ValueError("AI_SERVICE_PROVIDER_TIMEOUT_SECONDS must be numeric") from exc
+        if provider_timeout_seconds < 10 or provider_timeout_seconds > 900:
+            raise ValueError("AI_SERVICE_PROVIDER_TIMEOUT_SECONDS must be between 10 and 900")
+
         return cls(
             environment=os.getenv("AI_SERVICE_ENVIRONMENT", "development").lower(),
             provider=os.getenv("AI_SERVICE_PROVIDER", "deterministic").lower(),
             model=os.getenv("AI_SERVICE_MODEL", "velocira-deterministic-v1"),
+            discovery_model=os.getenv(
+                "AI_SERVICE_DISCOVERY_MODEL",
+                os.getenv("AI_SERVICE_MODEL", "velocira-deterministic-v1"),
+            ),
             fallback_model=os.getenv("AI_SERVICE_FALLBACK_MODEL", ""),
             gemini_api_key=os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")),
             gemini_base_url=os.getenv("AI_SERVICE_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/"),
+            provider_timeout_seconds=provider_timeout_seconds,
             internal_service_token=os.getenv("AI_SERVICE_INTERNAL_TOKEN", ""),
             max_input_bytes=max_input_bytes,
             log_level=os.getenv("AI_SERVICE_LOG_LEVEL", "INFO").upper(),
