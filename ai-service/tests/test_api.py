@@ -4,6 +4,8 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app.models import UsageMetadata
+from app.providers import ProviderResult
 
 
 def _payload() -> dict[str, object]:
@@ -117,6 +119,61 @@ def test_discovery_planner_returns_one_typed_high_value_question() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["planner"] == "deterministic-risk-aware-v1"
+    assert body["planner"] == "deterministic-discovery-strategist-v3"
+    assert body["model"] == "deterministic"
     assert body["next_question"]["category"] == "USERS"
+    assert body["next_question"]["question_text"].startswith("Who starts the core process")
+    assert body["next_question"]["options"][-1]["key"] == "not-decided"
+    assert body["candidate_scores"]
+    assert body["selection_reason"]
+    assert "project:description" in body["source_context"]
     assert body["assumptions"] == []
+
+
+def test_discovery_provider_only_receives_the_top_ranked_candidate() -> None:
+    class RecordingPlanner:
+        model = "test-discovery-model"
+
+        def __init__(self) -> None:
+            self.candidates: list[dict[str, object]] = []
+
+        async def plan_discovery_question(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.candidates = kwargs["candidate_questions"]
+            candidate = self.candidates[0]
+            return ProviderResult(
+                output={
+                    "key": candidate["key"],
+                    "category": candidate["category"],
+                    "question_text": "For the confirmed support-delay outcome, which roles start, resolve, approve, or monitor the work?",
+                    "why_we_ask": "The answer defines responsibility, permissions, notifications, and exception ownership for the core workflow.",
+                    "selection_reason": "This is the top-ranked unresolved decision.",
+                    "missing_requirement": "Named actors and authority boundaries.",
+                    "source_context": ["project:description", "answer:problem"],
+                    "assumptions_to_validate": [],
+                    "options": [
+                        {"key": "operator", "label": "Operator owns routine work", "description": "Keeps daily handling fast while escalating consequential exceptions."},
+                        {"key": "approver", "label": "Approver owns consequential decisions", "description": "Adds control but requires deadlines and a backup decision path."},
+                        {"key": "state-based", "label": "Authority changes by workflow state", "description": "Supports hand-offs but requires explicit transition permissions and ownership."},
+                        {"key": "not-decided", "label": "Not decided yet", "description": "Keeps role authority as an explicit unresolved product decision."},
+                    ],
+                },
+                usage=UsageMetadata(input_tokens=1, output_tokens=1, cost_cents=0),
+                model=self.model,
+            )
+
+    planner = RecordingPlanner()
+    client = TestClient(create_app(settings=Settings(environment="test"), provider=planner))
+    response = client.post(
+        "/v1/discovery/plan",
+        json={
+            "project": _payload()["project"],
+            "answers": [{
+                "question_key": "problem", "category": "PROBLEM", "disposition": "ANSWERED",
+                "question_text": "Where does support break down?", "answer_text": "Reduce support delays.",
+            }],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["planner"] == "gemini-context-planner-v3"
+    assert [candidate["key"] for candidate in planner.candidates] == ["users"]

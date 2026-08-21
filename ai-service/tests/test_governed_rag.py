@@ -182,6 +182,37 @@ def test_gemini_srs_schema_is_inline_and_requires_traceability_fields() -> None:
     }.issubset(requirement["required"])
 
 
+@pytest.mark.asyncio
+async def test_exhaustive_generation_never_saves_reduced_fallback_after_provider_failure() -> None:
+    source_id, chunk_id = uuid4(), uuid4()
+    payload = SrsGenerationRequest(
+        project=ProjectContext(id=uuid4(), name="HomeEase", description="A home services booking product", type="WEB_APP"),
+        confirmed_brief={"problem": "Customers need a reliable way to book home services."},
+        profile=SrsProfileInput(key="ENTERPRISE", name="Enterprise", controls=["Trace requirements"]),
+        evidence=[RetrievalHit(
+            source_id=source_id, chunk_id=chunk_id, source_title="Confirmed discovery",
+            content="Customers book a service and receive a confirmed outcome.", score=1.0,
+        )],
+        generation_mode="EXHAUSTIVE",
+    )
+
+    class UnavailableProvider:
+        name = "gemini"
+        model = "gemini-3.1-pro-preview"
+
+        async def generate_srs(self, request, *, correlation_id):  # type: ignore[no-untyped-def]
+            del request, correlation_id
+            raise AiServiceError(
+                ErrorCode.PROVIDER_TIMEOUT, "provider timeout", status_code=504, retryable=True
+            )
+
+    with pytest.raises(AiServiceError, match="not replaced with a reduced fallback") as error:
+        await generate_srs(payload, UnavailableProvider(), correlation_id="exhaustive-timeout")
+
+    assert error.value.code is ErrorCode.PROVIDER_TIMEOUT
+    assert error.value.retryable is True
+
+
 def test_atomicity_rule_allows_one_obligation_with_conjoined_data() -> None:
     source_id, chunk_id = uuid4(), uuid4()
     evidence = [RetrievalHit(
