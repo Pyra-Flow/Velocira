@@ -397,6 +397,13 @@ export interface InterviewChoiceOption {
   description: string;
 }
 
+export interface InterviewCandidateScore {
+  key: string;
+  category: InterviewCategory;
+  score: number;
+  reasons: string[];
+}
+
 export interface InterviewQuestionResponse {
   questionKey: string;
   category: InterviewCategory;
@@ -405,6 +412,14 @@ export interface InterviewQuestionResponse {
   riskLevel: RiskLevel;
   allowsMultiple: boolean;
   options: InterviewChoiceOption[];
+  selectionReason: string;
+  missingRequirement: string;
+  sourceContext: string[];
+  confirmedContextUsed: string[];
+  assumptionsToValidate: string[];
+  candidateScores: InterviewCandidateScore[];
+  planner: string;
+  model: string;
 }
 
 export interface InterviewAnswerResponse {
@@ -422,6 +437,14 @@ export interface InterviewAnswerResponse {
   options: InterviewChoiceOption[];
   selectedOptionKeys: string[];
   customAnswerText?: string | null;
+  selectionReason?: string | null;
+  missingRequirement?: string | null;
+  sourceContext: string[];
+  confirmedContextUsed: string[];
+  assumptionsToValidate: string[];
+  candidateScores: InterviewCandidateScore[];
+  planner?: string | null;
+  model?: string | null;
 }
 
 export interface InterviewAssumptionResponse {
@@ -567,7 +590,10 @@ export interface SrsVersionResponse {
 /*  Types — Linked documentation package                               */
 /* ================================================================== */
 
-export type DocumentationArtifactType = "SRS" | "USE_CASES" | "ERD" | "OPENAPI" | "TRACEABILITY";
+export type DocumentationArtifactType =
+  | "SRS" | "BRD" | "ARCHITECTURE" | "USE_CASES" | "C4_CONTEXT" | "WORKFLOWS"
+  | "DATA_DICTIONARY" | "ERD" | "OPENAPI" | "SECURITY" | "TEST_PLAN" | "DEPLOYMENT"
+  | "OPERATIONS" | "USER_MANUAL" | "RISK_REGISTER" | "TRACEABILITY";
 export type DocumentationExportFormat = "ZIP" | "MARKDOWN" | "PDF" | "DOCX" | "OPENAPI_JSON" | "OPENAPI_YAML" | "UML_SOURCE" | "ERD_SOURCE";
 export type DocumentationExportTemplate = "EXECUTIVE" | "TECHNICAL" | "MINIMAL";
 export type DocumentationExportTheme = "SIGNAL" | "COMMAND" | "OCEAN" | "VIOLET" | "EMERALD" | "MONOCHROME";
@@ -970,9 +996,9 @@ export const srsApi = {
   list: (projectId: string) =>
     apiClient<SrsVersionResponse[]>(`/v1/projects/${projectId}/srs`, { method: "GET" }),
 
-  generate: (projectId: string, profileKey: string) =>
+  generate: (projectId: string, profileKey: string, generationMode: "STANDARD" | "EXHAUSTIVE" = "EXHAUSTIVE") =>
     apiClient<SrsVersionResponse>(`/v1/projects/${projectId}/srs/generate`, {
-      method: "POST", body: JSON.stringify({ profileKey }),
+      method: "POST", body: JSON.stringify({ profileKey, generationMode }),
     }),
 
   approve: (projectId: string, versionId: string) =>

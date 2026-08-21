@@ -76,6 +76,7 @@ export default function GuidedBriefingWorkspace({
   const [documentRevision, setDocumentRevision] = useState(0);
   const [slowGeneration, setSlowGeneration] = useState(false);
   const [startingGeneration, setStartingGeneration] = useState(false);
+  const [interviewReady, setInterviewReady] = useState(generationUnlocked);
   const stage = generation?.stage ?? "NEEDS_INPUT";
   const isActive = ACTIVE_STAGES.has(stage);
   const isReady = stage === "READY";
@@ -83,6 +84,13 @@ export default function GuidedBriefingWorkspace({
   const needsDiscovery = ["DRAFT", "DISCOVERY"].includes(project.status);
   const readyToGenerate = stage === "NEEDS_INPUT" && project.status === "READY_FOR_GENERATION";
   const canGenerateFromDiscovery = !isActive && project.status === "READY_FOR_GENERATION";
+  const srsGenerationReady = generationUnlocked || interviewReady;
+
+  const continueToSrs = () => {
+    window.setTimeout(() => {
+      document.getElementById("srs-heading")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  };
 
   const load = useCallback(async () => {
     try {
@@ -261,10 +269,16 @@ export default function GuidedBriefingWorkspace({
             </div>
             <InterviewPanel
               projectId={project.id}
-              onGenerateProject={() => void generateProject()}
-              generationSubmitting={startingGeneration}
+              onReadinessChanged={setInterviewReady}
+              onContinueToSrs={continueToSrs}
               onUpdated={() => { setDocumentRevision((current) => current + 1); onProjectUpdated(); }}
             />
+          </section>
+        )}
+
+        {!isActive && srsGenerationReady && (
+          <section className="mt-8" aria-label="SRS generation">
+            <SrsWorkspace projectId={project.id} projectName={project.name} projectDescription={project.description} generationUnlocked={srsGenerationReady} onUpdated={() => { setDocumentRevision((current) => current + 1); onProjectUpdated(); }} />
           </section>
         )}
 
@@ -273,7 +287,7 @@ export default function GuidedBriefingWorkspace({
             <h2 className="text-xl font-semibold text-foreground">{readyToGenerate ? "Your project is ready to generate." : generation?.headline ?? "Your project is ready to generate."}</h2>
             <p className="mt-2 text-sm leading-6 text-foreground-secondary">{readyToGenerate ? "Your answers are saved. Generate your first project plan whenever you are ready." : jobMessage}</p>
             <div className="mt-5 flex flex-wrap gap-3">
-              {readyToGenerate && <Button onClick={() => void generateProject()} loading={startingGeneration} icon={<Sparkles className="h-4 w-4" />}>Generate project</Button>}
+              {readyToGenerate && <Button onClick={() => void generateProject()} loading={startingGeneration} icon={<Sparkles className="h-4 w-4" />}>Generate project plan</Button>}
               {generation?.canRetry && <Button onClick={() => void retry()} icon={<RotateCcw className="h-4 w-4" />}>Try again</Button>}
               {actionError && <Button variant="outline" onClick={() => void load()}>Check connection</Button>}
               {!readyToGenerate && <Button variant={generation?.canRetry ? "outline" : "primary"} onClick={() => setRefinementOpen(true)}>Update idea</Button>}
@@ -295,8 +309,7 @@ export default function GuidedBriefingWorkspace({
           <details className="mt-8 border-t border-border pt-5" open={advancedOpen} onToggle={(event) => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}>
             <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-accent/30"><ChevronDown className="h-4 w-4" /> Advanced project details</summary>
             <div className="mt-6 space-y-8">
-              <InterviewPanel projectId={project.id} onUpdated={() => { setDocumentRevision((current) => current + 1); onProjectUpdated(); }} />
-              <SrsWorkspace projectId={project.id} projectName={project.name} projectDescription={project.description} generationUnlocked={generationUnlocked} onUpdated={() => { setDocumentRevision((current) => current + 1); onProjectUpdated(); }} />
+              <InterviewPanel projectId={project.id} onReadinessChanged={setInterviewReady} onContinueToSrs={continueToSrs} onUpdated={() => { setDocumentRevision((current) => current + 1); onProjectUpdated(); }} />
               <DocumentationPackageWorkspace projectId={project.id} refreshVersion={documentRevision} onUpdated={onProjectUpdated} />
               <div className="flex flex-wrap gap-2 border-t border-border pt-6"><Button variant="ghost" onClick={() => void onRefresh()}>Refresh project</Button><Button variant="ghost" onClick={() => void onArchiveToggle()} disabled={projectActionSubmitting} icon={<X className="h-4 w-4" />}>{project.status === "ARCHIVED" ? "Restore project" : "Archive project"}</Button></div>
             </div>

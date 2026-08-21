@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AlertCircle,
   Braces,
   Check,
   CheckCircle2,
@@ -42,9 +43,20 @@ type WorkspaceMode = "atlas" | "handoff";
 
 const artifactDetails: Record<DocumentationArtifactType, { label: string; group: "documents" | "visuals" | "sources"; format: string; Icon: typeof FileText }> = {
   SRS: { label: "Software requirements", group: "documents", format: "DOCX", Icon: FileText },
+  BRD: { label: "Business requirements", group: "documents", format: "MD", Icon: FileText },
+  ARCHITECTURE: { label: "Architecture description", group: "documents", format: "MD", Icon: Network },
   USE_CASES: { label: "Use case map", group: "visuals", format: "SVG", Icon: Network },
+  C4_CONTEXT: { label: "C4 system context", group: "visuals", format: "SVG", Icon: Network },
+  WORKFLOWS: { label: "Workflow and recovery", group: "visuals", format: "SVG", Icon: GitBranch },
+  DATA_DICTIONARY: { label: "Data dictionary", group: "documents", format: "MD", Icon: Database },
   ERD: { label: "Entity relationship diagram", group: "visuals", format: "SVG", Icon: Database },
   OPENAPI: { label: "OpenAPI contract", group: "sources", format: "JSON", Icon: Braces },
+  SECURITY: { label: "Security and privacy", group: "documents", format: "MD", Icon: FileText },
+  TEST_PLAN: { label: "Verification and test plan", group: "documents", format: "MD", Icon: CheckCircle2 },
+  DEPLOYMENT: { label: "Deployment specification", group: "documents", format: "MD", Icon: PackageOpen },
+  OPERATIONS: { label: "Operations runbook", group: "documents", format: "MD", Icon: PanelTopOpen },
+  USER_MANUAL: { label: "User manual", group: "documents", format: "MD", Icon: FileText },
+  RISK_REGISTER: { label: "Risk and decision register", group: "sources", format: "MD", Icon: AlertCircle },
   TRACEABILITY: { label: "Traceability matrix", group: "sources", format: "MD", Icon: GitBranch },
 };
 
@@ -54,8 +66,8 @@ const groups: Array<{ key: "documents" | "visuals" | "sources"; label: string }>
   { key: "sources", label: "Technical sources" },
 ];
 
-function isDiagram(type: DocumentationArtifactType | ""): type is "USE_CASES" | "ERD" {
-  return type === "USE_CASES" || type === "ERD";
+function isDiagram(type: DocumentationArtifactType | ""): type is "USE_CASES" | "C4_CONTEXT" | "WORKFLOWS" | "ERD" {
+  return type === "USE_CASES" || type === "C4_CONTEXT" || type === "WORKFLOWS" || type === "ERD";
 }
 
 function label(value: string) {
@@ -296,7 +308,7 @@ export default function DocumentationPackageWorkspace({ projectId, refreshVersio
     finally { setActiveAction(null); }
   };
 
-  const downloadDiagram = async (type: "USE_CASES" | "ERD") => {
+  const downloadDiagram = async (type: "USE_CASES" | "C4_CONTEXT" | "WORKFLOWS" | "ERD") => {
     if (!selectedPackage) return;
     setActiveAction("preview"); setError(null); setNotice(null);
     const result = await fetchDocumentationArtifactPreview(projectId, selectedPackage.id, type);

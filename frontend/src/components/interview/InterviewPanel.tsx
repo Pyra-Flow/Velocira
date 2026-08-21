@@ -27,8 +27,8 @@ import {
 type Props = {
   projectId: string;
   onUpdated?: () => void;
-  onGenerateProject?: () => void;
-  generationSubmitting?: boolean;
+  onReadinessChanged?: (generationReady: boolean) => void;
+  onContinueToSrs?: () => void;
 };
 
 function label(value: string) {
@@ -44,10 +44,26 @@ function questionFromAnswer(answer: InterviewAnswerResponse): InterviewQuestionR
     riskLevel: "MEDIUM",
     allowsMultiple: answer.allowsMultiple,
     options: answer.options,
+    selectionReason: answer.selectionReason ?? "This question was part of the captured discovery path.",
+    missingRequirement: answer.missingRequirement ?? "This answer supplies context used by downstream documents.",
+    sourceContext: answer.sourceContext ?? [],
+    confirmedContextUsed: answer.confirmedContextUsed ?? [],
+    assumptionsToValidate: answer.assumptionsToValidate ?? [],
+    candidateScores: answer.candidateScores ?? [],
+    planner: answer.planner ?? "persisted-question-plan",
+    model: answer.model ?? "unknown",
   };
 }
 
-export default function InterviewPanel({ projectId, onUpdated, onGenerateProject, generationSubmitting = false }: Props) {
+function sourceLabel(source: string) {
+  if (source.startsWith("project:")) return `Project ${source.slice("project:".length).replaceAll("-", " ")}`;
+  if (source.startsWith("answer:")) return `Earlier answer: ${label(source.slice("answer:".length))}`;
+  if (source.startsWith("open-question:")) return `Open gap: ${label(source.slice("open-question:".length))}`;
+  if (source.startsWith("evidence:")) return "Approved project evidence";
+  return source;
+}
+
+export default function InterviewPanel({ projectId, onUpdated, onReadinessChanged, onContinueToSrs }: Props) {
   const [session, setSession] = useState<InterviewSessionResponse | null>(null);
   const [answerText, setAnswerText] = useState("");
   const [selectedOptionKeys, setSelectedOptionKeys] = useState<string[]>([]);
@@ -64,6 +80,7 @@ export default function InterviewPanel({ projectId, onUpdated, onGenerateProject
   const applySession = (next: InterviewSessionResponse, notifyParent = true) => {
     setSession(next);
     setError(null);
+    onReadinessChanged?.(next.readiness.generationReady);
     if (notifyParent) onUpdated?.();
   };
 
@@ -125,9 +142,11 @@ export default function InterviewPanel({ projectId, onUpdated, onGenerateProject
     if (!activeQuestion) return;
     setSelectedOptionKeys((current) => {
       if (!activeQuestion.allowsMultiple) return current.includes(optionKey) ? [] : [optionKey];
-      return current.includes(optionKey)
-        ? current.filter((key) => key !== optionKey)
-        : [...current, optionKey];
+      if (optionKey === "not-decided") return current.includes(optionKey) ? [] : [optionKey];
+      const decided = current.filter((key) => key !== "not-decided");
+      return decided.includes(optionKey)
+        ? decided.filter((key) => key !== optionKey)
+        : [...decided, optionKey];
     });
   };
 
@@ -192,10 +211,57 @@ export default function InterviewPanel({ projectId, onUpdated, onGenerateProject
                   <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
                   <p><span className="font-semibold text-foreground">Why this matters:</span> {activeQuestion.whyWeAsk}</p>
                 </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-md border border-border bg-background-secondary/35 p-3.5 text-sm text-foreground-secondary">
+                    <p className="font-semibold text-foreground">Why this question now</p>
+                    <p className="mt-1 leading-5">{activeQuestion.selectionReason}</p>
+                  </div>
+                  <div className="rounded-md border border-border bg-background-secondary/35 p-3.5 text-sm text-foreground-secondary">
+                    <p className="font-semibold text-foreground">What it unlocks</p>
+                    <p className="mt-1 leading-5">{activeQuestion.missingRequirement}</p>
+                  </div>
+                </div>
+                {activeQuestion.sourceContext.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-foreground-secondary">Context considered</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {activeQuestion.sourceContext.map((source) => <span key={source} className="rounded-full border border-border bg-card px-2.5 py-1 text-xs text-foreground-secondary">{sourceLabel(source)}</span>)}
+                    </div>
+                  </div>
+                )}
+                {(activeQuestion.confirmedContextUsed.length > 0 || activeQuestion.assumptionsToValidate.length > 0) && (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-md border border-success/20 bg-success/5 p-3.5">
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-success">Confirmed context used</p>
+                      <ul className="mt-2 space-y-1 text-xs leading-5 text-foreground-secondary">
+                        {activeQuestion.confirmedContextUsed.map((fact) => <li key={fact}>• {fact}</li>)}
+                      </ul>
+                    </div>
+                    <div className="rounded-md border border-warning/20 bg-warning/5 p-3.5">
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-warning">Still needs validation</p>
+                      {activeQuestion.assumptionsToValidate.length > 0
+                        ? <ul className="mt-2 space-y-1 text-xs leading-5 text-foreground-secondary">{activeQuestion.assumptionsToValidate.map((item) => <li key={item}>• {item}</li>)}</ul>
+                        : <p className="mt-2 text-xs leading-5 text-foreground-secondary">No assumptions were introduced for this question.</p>}
+                    </div>
+                  </div>
+                )}
+                {activeQuestion.candidateScores.length > 0 && (
+                  <details className="rounded-md border border-border bg-background-secondary/25 p-3.5">
+                    <summary className="cursor-pointer text-xs font-semibold uppercase tracking-[0.12em] text-foreground-secondary">Review question ranking</summary>
+                    <div className="mt-3 space-y-2">
+                      {activeQuestion.candidateScores.slice(0, 5).map((candidate) => (
+                        <div key={candidate.key} className="flex items-start justify-between gap-4 text-xs text-foreground-secondary">
+                          <div><span className="font-medium text-foreground">{label(candidate.category)}</span><span className="ml-2">{candidate.reasons.join("; ")}</span></div>
+                          <span className="shrink-0 font-mono text-foreground">{candidate.score}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
                 {activeQuestion.options.length > 0 && (
                   <fieldset disabled={submitting}>
-                    <legend className="text-sm font-semibold text-foreground">Suggested answers</legend>
-                    <p className="mt-1 text-xs text-foreground-secondary">{activeQuestion.allowsMultiple ? "Choose all that apply, then add details if useful." : "Choose the closest fit, then add details if useful."}</p>
+                    <legend className="text-sm font-semibold text-foreground">Decision patterns to consider</legend>
+                    <p className="mt-1 text-xs text-foreground-secondary">These are possibilities with consequences, not answers assumed for your project. {activeQuestion.allowsMultiple ? "Choose all that apply." : "Choose the closest fit."}</p>
                     <div className="mt-3 grid gap-2 sm:grid-cols-2">
                       {activeQuestion.options.map((option) => {
                         const selected = selectedOptionKeys.includes(option.key);
@@ -223,7 +289,7 @@ export default function InterviewPanel({ projectId, onUpdated, onGenerateProject
                   </fieldset>
                 )}
                 <label className="block">
-                  <span className="text-sm font-semibold text-foreground">Add your own answer <span className="font-normal text-foreground-secondary">(optional)</span></span>
+                  <span className="text-sm font-semibold text-foreground">Your answer or another approach <span className="font-normal text-foreground-secondary">(optional when a pattern fits)</span></span>
                   <textarea
                     rows={4}
                     value={answerText}
@@ -244,17 +310,32 @@ export default function InterviewPanel({ projectId, onUpdated, onGenerateProject
               </div>
             </Card>
           </motion.div>
-        ) : (
+        ) : session.readiness.generationReady ? (
           <motion.div key="questions-complete" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
             <Card className="border-accent/30 bg-card p-6 sm:p-7">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                <div className="flex gap-3"><CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-success" /><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-success">Questions complete</p><h3 className="mt-1 text-xl font-semibold text-foreground">Ready to generate your first version.</h3><p className="mt-2 max-w-xl text-sm leading-6 text-foreground-secondary">Your answers are the input. Review them or generate when this feels right.</p></div></div>
+                <div className="flex gap-3"><CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-success" /><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-success">Questions complete</p><h3 className="mt-1 text-xl font-semibold text-foreground">Ready to generate your SRS.</h3><p className="mt-2 max-w-xl text-sm leading-6 text-foreground-secondary">Your confirmed answers are the source context for the generated requirements.</p></div></div>
                 <div className="flex flex-wrap gap-2">
-                  {onGenerateProject && <Button size="sm" icon={<Sparkles className="h-4 w-4" />} onClick={onGenerateProject} loading={generationSubmitting} disabled={submitting}>Generate project</Button>}
-                  <Button variant="outline" size="sm" icon={<RotateCcw className="h-4 w-4" />} onClick={() => void reopen()} loading={submitting} disabled={generationSubmitting}>Edit discovery</Button>
+                  {onContinueToSrs && <Button size="sm" icon={<Sparkles className="h-4 w-4" />} onClick={onContinueToSrs} disabled={submitting}>Configure and generate SRS</Button>}
+                  <Button variant="outline" size="sm" icon={<RotateCcw className="h-4 w-4" />} onClick={() => void reopen()} loading={submitting}>Edit discovery</Button>
                 </div>
               </div>
-              <div className="mt-5 flex items-center gap-2 rounded-md border border-accent/20 bg-accent-light/40 px-3 py-2.5 text-sm text-foreground-secondary"><Sparkles className="h-4 w-4 text-accent" /> {onGenerateProject ? "Your description was used to tailor these questions, not fill in their answers." : "Generate an SRS now, or go straight to the full package after the SRS is created."}</div>
+              <div className="mt-5 flex items-center gap-2 rounded-md border border-accent/20 bg-accent-light/40 px-3 py-2.5 text-sm text-foreground-secondary"><Sparkles className="h-4 w-4 text-accent" /> Your confirmed answers are ready for the SRS generator. Choose a standards profile and depth below.</div>
+            </Card>
+          </motion.div>
+        ) : (
+          <motion.div key="questions-blocked" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
+            <Card className="border-warning/30 bg-card p-6 sm:p-7">
+              <div className="flex gap-3">
+                <Lightbulb className="mt-0.5 h-6 w-6 shrink-0 text-warning" />
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-warning">More detail needed</p>
+                  <h3 className="mt-1 text-xl font-semibold text-foreground">Resolve the remaining discovery gap.</h3>
+                  <p className="mt-2 text-sm leading-6 text-foreground-secondary">The interview cannot safely generate requirements from an unknown or tentative decision.</p>
+                  {session.readiness.blockers.length > 0 && <ul className="mt-4 space-y-2 text-sm text-foreground-secondary">{session.readiness.blockers.map((blocker) => <li key={blocker}>• {blocker}</li>)}</ul>}
+                  <Button className="mt-5" variant="outline" size="sm" icon={<RotateCcw className="h-4 w-4" />} onClick={() => void reopen()} loading={submitting}>Load the required follow-up</Button>
+                </div>
+              </div>
             </Card>
           </motion.div>
         )}

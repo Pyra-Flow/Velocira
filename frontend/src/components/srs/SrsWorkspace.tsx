@@ -114,6 +114,7 @@ export default function SrsWorkspace({ projectId, projectName, projectDescriptio
   const [profiles, setProfiles] = useState<StandardsProfileResponse[]>([]);
   const [versions, setVersions] = useState<SrsVersionResponse[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("STARTER");
+  const [generationMode, setGenerationMode] = useState<"STANDARD" | "EXHAUSTIVE">("EXHAUSTIVE");
   const [selectedVersionId, setSelectedVersionId] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [draftProjectName, setDraftProjectName] = useState(projectName);
@@ -177,7 +178,7 @@ export default function SrsWorkspace({ projectId, projectName, projectDescriptio
   const generate = async () => {
     setSubmitting(true); setActiveAction("generate"); setError(null); setSuccessMessage(null);
     try {
-      const result = await srsApi.generate(projectId, selectedProfile);
+      const result = await srsApi.generate(projectId, selectedProfile, generationMode);
       if (result.success && result.data) {
         await refresh();
         setSelectedVersionId(result.data.id);
@@ -251,6 +252,7 @@ export default function SrsWorkspace({ projectId, projectName, projectDescriptio
           <div className="max-w-2xl"><div className="flex items-center gap-2"><Sparkles className="h-5 w-5 text-accent" /><h2 id="srs-heading" className="text-xl font-semibold text-foreground">Software requirements</h2></div><p className="mt-2 text-sm leading-6 text-foreground-secondary">Generate a structured SRS directly from the answers above. No file upload, approval, or separate review page is required.</p></div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
             <label className="grid gap-1 text-sm text-foreground-secondary"><span className="sf-meta uppercase tracking-wide">Standards profile</span><select value={selectedProfile} onChange={(event) => setSelectedProfile(event.target.value)} disabled={submitting} className="min-w-48 rounded-md border border-input-border bg-input-bg px-3 py-2.5 text-sm text-foreground focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20">{profiles.map((profile) => <option key={profile.key} value={profile.key}>{profile.name}</option>)}</select></label>
+            <label className="grid gap-1 text-sm text-foreground-secondary"><span className="sf-meta uppercase tracking-wide">Depth</span><select value={generationMode} onChange={(event) => setGenerationMode(event.target.value as "STANDARD" | "EXHAUSTIVE")} disabled={submitting} className="min-w-40 rounded-md border border-input-border bg-input-bg px-3 py-2.5 text-sm text-foreground focus:border-input-focus focus:outline-none focus:ring-2 focus:ring-accent/20"><option value="EXHAUSTIVE">Exhaustive</option><option value="STANDARD">Standard</option></select></label>
             <Button onClick={() => void generate()} disabled={!generationUnlocked || submitting} loading={submitting && activeAction === "generate"} icon={<FileText className="h-4 w-4" />}>Generate SRS</Button>
           </div>
         </div>
@@ -263,6 +265,7 @@ export default function SrsWorkspace({ projectId, projectName, projectDescriptio
           </div>
         </section>
         {!generationUnlocked && <p className="mt-4 border border-border bg-background-secondary/60 px-3 py-2.5 text-sm text-foreground-secondary">Finish the active discovery question above and this button unlocks automatically.</p>}
+        <p className="sf-meta mt-3 text-foreground-secondary">{generationMode === "EXHAUSTIVE" ? "Exhaustive mode compiles four specialist workstreams and can take several minutes." : "Standard mode uses one bounded generation pass for a faster draft."}</p>
         {selectedProfileInfo && <p className="sf-meta mt-4 text-foreground-secondary">{selectedProfileInfo.description} · {selectedProfileInfo.controls.length} included checks</p>}
         <AnimatePresence initial={false}>
           {operationLabel && <motion.div key="srs-operation" initial={shouldReduceMotion ? false : { opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={shouldReduceMotion ? undefined : { opacity: 0, y: -4 }} transition={transition} className="mt-4 flex items-center gap-2 border border-accent/25 bg-accent-light px-3 py-2.5 text-sm text-accent" role="status" aria-live="polite"><Loader2 className="h-4 w-4 animate-spin" />{operationLabel}. Existing versions remain available.</motion.div>}
