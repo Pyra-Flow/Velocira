@@ -10,7 +10,6 @@ import {
   Sun,
   Moon,
   LogOut,
-  LayoutDashboard,
   FolderKanban,
   Settings,
   ShieldCheck,
@@ -83,9 +82,8 @@ export default function Navbar() {
   /* ── nav links ────────────────────────────────────────── */
   const navLinks = isAuthenticated
     ? [
-        { href: "/home", label: t("nav.home") },
         { href: "/projects", label: t("nav.projects") },
-        { href: "/dashboard", label: t("nav.dashboard") },
+        { href: "/settings", label: t("nav.settings") },
       ]
     : [
         { href: "/", label: t("nav.home") },
@@ -130,7 +128,6 @@ export default function Navbar() {
 
   /* ── profile dropdown items ───────────────────────────── */
   const profileLinks = [
-    { href: "/dashboard", label: t("nav.dashboard"), icon: LayoutDashboard },
     { href: "/projects", label: t("nav.projects"), icon: FolderKanban },
     { href: "/settings", label: t("nav.settings"), icon: Settings },
     ...(user?.role === "ADMIN"
@@ -157,7 +154,7 @@ export default function Navbar() {
           <div className="relative flex h-16 items-center justify-between px-3 sm:px-4">
             {/* ── Logo ──────────────────────────────────── */}
             <Link
-              href={isAuthenticated ? "/home" : "/"}
+              href={isAuthenticated ? "/projects" : "/"}
               onClick={closeMenus}
               className="group flex items-center gap-3"
             >

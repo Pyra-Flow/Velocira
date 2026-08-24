@@ -15,7 +15,7 @@ export default function VelociraLogo({ size = 32, className, priority = false }:
       width={size}
       height={size}
       priority={priority}
-      className={className}
+      className={["velocira-logo", className].filter(Boolean).join(" ")}
     />
   );
 }

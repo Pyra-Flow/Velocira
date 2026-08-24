@@ -17,6 +17,7 @@ export default function ProjectDetailPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuthStore();
   const { selectedProject: project, isLoading: projectLoading, error, fetchProject, archiveProject, restoreProject, isSubmitting, setSelectedProject } = useProjectStore();
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
+  const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) router.replace("/login");
@@ -25,7 +26,9 @@ export default function ProjectDetailPage() {
   useEffect(() => {
     if (!isAuthenticated || !id) return;
     let active = true;
-    void fetchProject(id).then(() => { if (!active) return; });
+    void fetchProject(id).then(() => {
+      if (active) setLoadedProjectId(id);
+    });
     return () => { active = false; setSelectedProject(null); };
   }, [fetchProject, id, isAuthenticated, setSelectedProject]);
 
@@ -45,7 +48,7 @@ export default function ProjectDetailPage() {
     if (archived) setArchiveConfirmOpen(false);
   };
 
-  if (authLoading || !isAuthenticated || (projectLoading && !project)) return <WorkspaceLoading />;
+  if (authLoading || !isAuthenticated || loadedProjectId !== id || (projectLoading && !project)) return <WorkspaceLoading />;
   if (!project) {
     return <section className="mx-auto max-w-3xl px-4 py-16 sm:px-6"><Card className="text-center"><FolderOpen className="mx-auto mb-4 h-10 w-10 text-foreground-secondary/50" /><h1 className="text-xl font-semibold text-foreground">Project unavailable</h1><p className="mt-2 text-sm text-foreground-secondary">{error ?? "The project could not be found or you do not have access to it."}</p><Link href="/projects" className="mt-6 inline-block"><Button>Back to Projects</Button></Link></Card></section>;
   }

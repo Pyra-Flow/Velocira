@@ -6,10 +6,10 @@ import { usePathname } from "next/navigation";
 import {
   FolderKanban,
   Command,
-  LayoutDashboard,
   LogOut,
   Menu,
   Moon,
+  Plus,
   Settings,
   ShieldCheck,
   Sun,
@@ -22,12 +22,12 @@ import VelociraLogo from "@/components/branding/VelociraLogo";
 import Tooltip from "@/components/ui/Tooltip";
 
 const navigation = [
-  { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/projects", label: "Projects", icon: FolderKanban },
+  { href: "/projects/new", label: "New project", icon: Plus },
 ];
 
 function workspaceContext(pathname: string) {
-  if (pathname === "/dashboard") return "Workspace / Overview";
+  if (pathname === "/dashboard") return "Workspace / Projects";
   if (pathname === "/projects/new") return "Projects / New project";
   if (/^\/projects\/[^/]+/.test(pathname)) return "Projects / Project workspace";
   if (pathname.startsWith("/projects")) return "Projects / Library";
@@ -52,7 +52,13 @@ export default function WorkspaceHeader({ onOpenCommandPalette }: Props) {
     ? [...navigation, { href: "/admin", label: "Admin", icon: ShieldCheck }]
     : navigation;
 
-  const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
+  const isActive = (href: string) => {
+    if (href === "/projects/new") return pathname === href;
+    if (href === "/projects") {
+      return pathname === href || (/^\/projects\/[^/]+/.test(pathname) && !pathname.startsWith("/projects/new"));
+    }
+    return pathname === href || pathname.startsWith(`${href}/`);
+  };
   const closeMenu = () => setMenuOpen(false);
   const openMenu = () => {
     lastFocusedElementRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -111,7 +117,7 @@ export default function WorkspaceHeader({ onOpenCommandPalette }: Props) {
   return (
     <>
       <aside className="workspace-sidebar" aria-label="Velocira workspace">
-        <Link href="/dashboard" className="workspace-header__brand" onClick={closeMenu}>
+        <Link href="/projects" className="workspace-header__brand" onClick={closeMenu}>
           <span className="workspace-header__brand-mark"><VelociraLogo size={31} priority /></span>
           <span>Velocira</span>
         </Link>
@@ -120,6 +126,11 @@ export default function WorkspaceHeader({ onOpenCommandPalette }: Props) {
         {navigationLinks()}
 
         <div className="workspace-sidebar__footer">
+          <button type="button" className="workspace-sidebar__theme" onClick={toggleTheme} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
+            {theme === "dark" ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}
+            <span>Theme</span>
+            <small>{theme === "dark" ? "Dark" : "Light"}</small>
+          </button>
           <Link href="/settings" aria-current={isActive("/settings") ? "page" : undefined} className={cn("workspace-header__nav-link", isActive("/settings") && "is-active")}>
             <Settings aria-hidden="true" />
             <span>Settings</span>
@@ -140,7 +151,7 @@ export default function WorkspaceHeader({ onOpenCommandPalette }: Props) {
           <p className="workspace-header__context">{workspaceContext(pathname)}</p>
           <div className="workspace-header__actions">
             {onOpenCommandPalette && <Tooltip label="Quick actions · Ctrl+K"><button type="button" className="workspace-header__icon-action workspace-header__command" onClick={onOpenCommandPalette} aria-label="Open quick actions"><Command aria-hidden="true" /></button></Tooltip>}
-            <Tooltip label={theme === "dark" ? "Use light theme" : "Use dark theme"}><button type="button" className="workspace-header__icon-action" onClick={toggleTheme} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
+            <Tooltip label={theme === "dark" ? "Use light theme" : "Use dark theme"}><button type="button" className="workspace-header__icon-action workspace-header__theme-action" onClick={toggleTheme} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
               {theme === "dark" ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
             </button></Tooltip>
             <button type="button" className="workspace-header__menu-toggle" aria-expanded={menuOpen} aria-controls="workspace-mobile-navigation" aria-label={menuOpen ? "Close navigation" : "Open navigation"} onClick={() => menuOpen ? closeMenu() : openMenu()}>
