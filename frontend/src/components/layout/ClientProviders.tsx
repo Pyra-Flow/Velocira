@@ -55,7 +55,7 @@ export default function ClientProviders({
   }, [router, user?.role]);
 
   return (
-    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID} locale="en">
       <ThemeProvider initialTheme={initialTheme}>
         <MotionConfig reducedMotion="user">
           <LocaleProvider>
