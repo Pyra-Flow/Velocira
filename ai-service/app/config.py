@@ -24,7 +24,7 @@ class Settings:
     fallback_model: str = ""
     gemini_api_key: str = ""
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
-    provider_timeout_seconds: float = 180.0
+    provider_timeout_seconds: float = 600.0
     internal_service_token: str = ""
     max_input_bytes: int = 65_536
     log_level: str = "INFO"
@@ -52,7 +52,7 @@ class Settings:
         if embedding_dimensions < 128 or embedding_dimensions > 3072:
             raise ValueError("AI_SERVICE_EMBEDDING_DIMENSIONS must be between 128 and 3072")
 
-        raw_provider_timeout = os.getenv("AI_SERVICE_PROVIDER_TIMEOUT_SECONDS", "180")
+        raw_provider_timeout = os.getenv("AI_SERVICE_PROVIDER_TIMEOUT_SECONDS", "600")
         try:
             provider_timeout_seconds = float(raw_provider_timeout)
         except ValueError as exc:
