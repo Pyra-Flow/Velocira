@@ -1,4 +1,9 @@
-"""Grounded, information-value discovery planning with a deterministic fallback."""
+"""Grounded, information-value discovery planning.
+
+The deterministic author is an explicit local/test provider. A configured live
+planner is validated here but is never replaced with deterministic prose after
+provider or schema failure.
+"""
 
 from __future__ import annotations
 
@@ -43,11 +48,19 @@ _GENERIC_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
     r"^walk me through the most important user journey",
     r"^how will you know the project is successful",
 ))
-_SHALLOW_OPTION_LABELS = {"yes", "no", "maybe", "users", "customers", "admins", "administrators"}
+_SHALLOW_OPTION_LABELS = {
+    "yes", "no", "maybe", "users", "customers", "admins", "administrators",
+    "customer booking first", "access only while needed", "detect quickly and recover",
+    "platform or technology is fixed", "operational owner has final authority",
+}
 _STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from", "how", "in",
     "is", "it", "of", "on", "or", "should", "that", "the", "this", "to", "what", "when", "which",
     "who", "will", "with", "your",
+}
+_GENERIC_PROJECT_TERMS = {
+    "app", "application", "build", "create", "described", "digital", "first", "platform", "product",
+    "project", "release", "service", "software", "solution", "system", "tool", "user", "users", "web",
 }
 
 _DECISION_FOCUS_BY_KEY = {
@@ -94,22 +107,6 @@ _DECISION_FOCUS_BY_KEY = {
     "support-burden": "support and exception volume as the primary success measure",
 }
 
-_GROUNDING_CATEGORIES = {
-    "USERS": ("PROBLEM",),
-    "SCOPE": ("PROBLEM", "USERS"),
-    "WORKFLOWS": ("SCOPE", "PROBLEM"),
-    "ENTITIES": ("SCOPE", "USERS", "PROBLEM"),
-    "INTEGRATIONS": ("SCOPE", "WORKFLOWS", "PROBLEM"),
-    "QUALITY_GOALS": ("PROBLEM", "SCOPE"),
-    "RISKS": ("QUALITY_GOALS", "PROBLEM", "SCOPE"),
-    "BUSINESS_RULES": ("WORKFLOWS", "USERS", "PROBLEM"),
-    "STAKEHOLDERS": ("RISKS", "USERS", "PROBLEM"),
-    "EXCLUSIONS": ("SCOPE", "PROBLEM"),
-    "METRICS": ("QUALITY_GOALS", "PROBLEM"),
-    "CONSTRAINTS": ("SCOPE", "PROBLEM"),
-}
-
-
 @dataclass(frozen=True, slots=True)
 class _Evaluation:
     question: DiscoveryQuestion
@@ -118,25 +115,33 @@ class _Evaluation:
 
 
 def unanswered_questions(payload: DiscoveryPlanningRequest) -> list[DiscoveryQuestion]:
-    answered_categories = {answer.category for answer in payload.answers}
+    answered_keys = {answer.question_key for answer in payload.answers if answer.question_key}
+    follow_up_keys = {
+        item.key.removeprefix("incomplete-").split("-facet-", 1)[0]
+        for item in payload.open_questions
+        if item.material and item.key.startswith("incomplete-")
+    }
     follow_up_categories = {
         item.category for item in payload.open_questions
-        if item.material and item.key.startswith(("incomplete-", "contradiction-"))
+        if item.material and item.key.startswith("contradiction-")
     }
-    follow_up_categories.update(
-        answer.category for answer in payload.answers
-        if answer.disposition == "ANSWERED"
-        and (_is_low_information(answer.answer_text) or "not-decided" in answer.selected_option_keys)
-    )
+    follow_up_categories.update(answer.category for answer in payload.answers
+                                if answer.disposition == "ANSWERED"
+                                and (_is_low_information(answer.answer_text)
+                                     or "not-decided" in answer.selected_option_keys))
     if payload.candidate_questions:
         return [
             _candidate_question(candidate)
             for candidate in payload.candidate_questions
-            if candidate.category not in answered_categories or candidate.category in follow_up_categories
+            if candidate.key not in answered_keys
+            or candidate.key in follow_up_keys
+            or candidate.category in follow_up_categories
         ]
     return [
         question for question in _QUESTION_CATALOG
-        if question.category not in answered_categories or question.category in follow_up_categories
+        if question.key not in answered_keys
+        or question.key in follow_up_keys
+        or question.category in follow_up_categories
     ]
 
 
@@ -230,9 +235,7 @@ def plan_for_generated_question(
     question_text = str(generated.get("question_text", "")).strip()
     why_we_ask = str(generated.get("why_we_ask", "")).strip()
     raw_options = generated.get("options", [])
-    options = _validated_generated_options(payload, raw_options)
-    if len(options) < 4:
-        options = _decision_options(payload, candidate)
+    options, rejected_options = _generated_options_with_rejections(payload, raw_options)
 
     question = DiscoveryQuestion(
         key=candidate.key,
@@ -243,7 +246,16 @@ def plan_for_generated_question(
         allows_multiple=candidate.allows_multiple,
         options=options,
     )
-    _validate_quality(payload, question, options)
+    try:
+        _validate_quality(payload, question, options)
+    except ValueError as exc:
+        if str(exc) == "Planner options do not provide useful decision support":
+            reason = "; ".join(rejected_options[:6]) or "fewer than four choices were returned"
+            raise ValueError(
+                "Planner options did not provide useful decision support; "
+                f"only {len(options)} passed semantic validation: {reason}"
+            ) from exc
+        raise
 
     allowed_anchors = set(_all_source_anchors(payload))
     requested_anchors = generated.get("source_context", [])
@@ -378,13 +390,20 @@ def _tailor_question(payload: DiscoveryPlanningRequest, question: DiscoveryQuest
     team = payload.project.team_size
     follow_up = next((item for item in payload.open_questions if item.material
                       and item.category == category
-                      and item.key.startswith(("incomplete-", "contradiction-"))), None)
+                      and item.key.startswith(("incomplete-", "contradiction-"))
+                      and (item.key.startswith("contradiction-")
+                           or _source_question_key(item.key) == question.key)), None)
     incomplete_answer = any(answer.category == category and answer.disposition == "ANSWERED"
                             and (_is_low_information(answer.answer_text)
                                  or "not-decided" in answer.selected_option_keys)
                             for answer in payload.answers)
     follow_up_key = follow_up.key if follow_up else (f"incomplete-{question.key}" if incomplete_answer else None)
-    prompt = _follow_up_question(profile, category, follow_up_key) if follow_up_key else {
+    if follow_up and _safe_follow_up_text(follow_up.question_text):
+        prompt = follow_up.question_text.strip()
+    elif follow_up_key:
+        prompt = _follow_up_question(profile, category, follow_up_key)
+    else:
+        prompt = {
         "PROBLEM": _problem_question(profile),
         "USERS": _users_question(profile),
         "STAKEHOLDERS": _stakeholder_question(profile),
@@ -395,16 +414,15 @@ def _tailor_question(payload: DiscoveryPlanningRequest, question: DiscoveryQuest
         "INTEGRATIONS": _integrations_question(profile),
         "QUALITY_GOALS": _quality_question(profile),
         "CONSTRAINTS": (
-            f"With a confirmed team of {team}, which boundary is truly fixed for the first release - launch date, budget, platform, or scope - and which may move?"
+            f"With a confirmed team of {team}, which one first-release boundary is fixed: launch date, budget, platform, or scope?"
             if team else
-            "When delivery pressure forces a trade-off, which boundary is fixed for the first release - launch date, budget, platform, or scope - and which may move?"
+            "Which one first-release boundary is fixed: launch date, budget, platform, or scope?"
         ),
         "RISKS": _risk_question(profile),
         "BUSINESS_RULES": _rules_question(profile),
         "METRICS": _metrics_question(profile),
-    }[category]
-    if not follow_up_key:
-        prompt = _ground_question(payload, category, prompt)
+        }[category]
+    prompt = _ground_in_project_context(payload, prompt)
     why = {
         "PROBLEM": "This separates the outcome worth funding from possible features and gives the SRS a measurable purpose.",
         "USERS": "Authority and responsibility define roles, permissions, notifications, and exception ownership.",
@@ -423,63 +441,85 @@ def _tailor_question(payload: DiscoveryPlanningRequest, question: DiscoveryQuest
     return question.model_copy(update={"question_text": prompt, "why_we_ask": why})
 
 
-def _ground_question(payload: DiscoveryPlanningRequest, category: str, question_text: str) -> str:
-    focus = _prior_decision_focus(payload, category)
-    if focus is None:
+def _ground_in_project_context(payload: DiscoveryPlanningRequest, question_text: str) -> str:
+    """Ensure deterministic fallback questions use actual project information."""
+    project_terms = _distinctive_project_terms(payload)
+    if project_terms and len(_semantic_terms(question_text) & project_terms) >= min(2, len(project_terms)):
+        return question_text
+    context = _project_context_phrase(payload)
+    if not context:
         return question_text
     lowered = question_text[0].lower() + question_text[1:]
-    return {
-        "USERS": f"Because the priority is {focus}, {lowered}",
-        "SCOPE": f"With {focus} as the priority, {lowered}",
-        "WORKFLOWS": f"The release focus is {focus}. {question_text}",
-        "ENTITIES": f"Within the release focus of {focus}, {lowered}",
-        "INTEGRATIONS": f"For the release focus of {focus}, {lowered}",
-        "QUALITY_GOALS": f"With {focus} already prioritized, {lowered}",
-        "RISKS": f"Given the priority of {focus}, {lowered}",
-        "BUSINESS_RULES": f"With {focus} already prioritized, {lowered}",
-        "STAKEHOLDERS": f"Given the priority of {focus}, {lowered}",
-        "EXCLUSIONS": f"To protect the boundary around {focus}, {lowered}",
-        "METRICS": f"To measure progress on {focus}, {lowered}",
-        "CONSTRAINTS": f"The release focus is {focus}. {question_text}",
-    }.get(category, question_text)
+    return f"For {context}, {lowered}"
 
 
-def _prior_decision_focus(payload: DiscoveryPlanningRequest, category: str) -> str | None:
-    eligible = _GROUNDING_CATEGORIES.get(category, ())
-    for source_category in eligible:
-        answer = next((item for item in reversed(payload.answers)
-                       if item.category == source_category and item.disposition == "ANSWERED"), None)
-        if answer is None:
-            continue
-        for key in answer.selected_option_keys:
-            if key == "not-decided":
-                continue
-            focus = _DECISION_FOCUS_BY_KEY.get(key)
-            if focus:
-                return focus
-    return None
+def _project_context_phrase(payload: DiscoveryPlanningRequest) -> str:
+    audience = _safe_context_value(payload.project.target_audience, 8)
+    industry = _safe_context_value(payload.project.industry, 4)
+    if audience and industry:
+        return f"{audience} in {industry}"
+    if audience:
+        return audience
+    if industry:
+        return f"work in {industry}"
+    description = _safe_context_value(payload.project.description, 12)
+    if description:
+        return f"the described {description}"
+    project_type = _safe_context_value(payload.project.type.replace("_", " "), 5)
+    return f"the described {project_type}" if project_type else ""
+
+
+def _safe_context_value(value: str | None, word_limit: int) -> str:
+    if not value or _looks_like_prompt_leak(value):
+        return ""
+    normalized = re.sub(r"\s+", " ", value).strip()
+    normalized = re.split(r"[.!?;\r\n]", normalized, maxsplit=1)[0].strip(" -,:\"")
+    normalized = re.sub(r"^(?:a|an|the)\s+", "", normalized, flags=re.IGNORECASE)
+    return " ".join(normalized.split()[:word_limit])
+
+
+def _distinctive_project_terms(payload: DiscoveryPlanningRequest) -> set[str]:
+    project_values = " ".join((
+        payload.project.description or "",
+        payload.project.industry or "",
+        payload.project.target_audience or "",
+        payload.project.tech_stack or "",
+    ))
+    return _semantic_terms(project_values) - _GENERIC_PROJECT_TERMS - _semantic_terms(payload.project.name)
 
 
 def _follow_up_question(profile: str, category: str, gap_key: str) -> str:
     if gap_key.startswith("contradiction-"):
         if category == "CONSTRAINTS":
-            return "The current integration and deployment answers point in different directions; which boundary should govern the first release, and what must change to satisfy it?"
-        return "Two confirmed answers currently conflict; which decision should govern the first release, and which earlier statement should be revised?"
+            return "Which boundary should govern the first release: the external integration or the deployment constraint?"
+        return "Which one of the conflicting decisions should govern the first release?"
     return {
-        "PROBLEM": "Your earlier answer did not identify one concrete outcome; which delay, error, or harmful result must improve first, and how would you recognize the improvement?",
-        "USERS": "Your earlier answer did not establish authority; who starts, completes, approves, or overrides the core action, and who only needs visibility?",
-        "SCOPE": "Your earlier answer did not define a complete first-release slice; which single journey must work end to end, and which nearby capability should wait?",
-        "WORKFLOWS": "Your earlier answer left the exception path open; after the main action fails or waits too long, who acts next and what should each person see?",
-        "ENTITIES": "Your earlier answer did not settle record ownership; which system or role owns corrections, access decisions, and deletion for the core record?",
+        "PROBLEM": "Which single delay, error, or harmful result must improve first?",
+        "USERS": "Which named actor has authority for the unresolved action?",
+        "SCOPE": "Which single journey must work end to end in the first release?",
+        "WORKFLOWS": "What exact recovery state follows the unresolved workflow failure?",
+        "ENTITIES": "Which named role or system owns the unresolved record decision?",
         "INTEGRATIONS": "Your earlier answer did not identify an authoritative dependency; which external system, if any, owns the status used by the core workflow?",
-        "QUALITY_GOALS": "Your earlier answer did not provide a testable target; which failure is least acceptable at launch, and what measurable threshold should govern it?",
-        "CONSTRAINTS": "Your earlier constraint answer did not identify a fixed boundary; which of launch date, budget, platform, or scope is non-negotiable, and which may move?",
+        "QUALITY_GOALS": "What measurable threshold governs the least acceptable launch failure?",
+        "CONSTRAINTS": "What exact value makes the unresolved delivery boundary non-negotiable?",
         "RISKS": _risk_question(profile),
         "BUSINESS_RULES": _rules_question(profile),
         "METRICS": _metrics_question(profile),
         "STAKEHOLDERS": _stakeholder_question(profile),
         "EXCLUSIONS": _exclusions_question(profile),
     }[category]
+
+
+def _source_question_key(finding_key: str) -> str:
+    if not finding_key.startswith("incomplete-"):
+        return finding_key
+    return finding_key.removeprefix("incomplete-").split("-facet-", 1)[0]
+
+
+def _safe_follow_up_text(value: str) -> bool:
+    text = value.strip()
+    return 20 <= len(text) <= 420 and text.endswith("?") and text.count("?") == 1 \
+        and not _looks_like_prompt_leak(text)
 
 
 def _profile(payload: DiscoveryPlanningRequest) -> str:
@@ -502,7 +542,7 @@ def _detect_profile(context: str) -> str:
         return "payment"
     if any(_contains_signal(context, term) for term in ("ai", "llm", "assistant", "agent", "model", "copilot")):
         return "ai"
-    if any(_contains_signal(context, term) for term in ("booking", "appointment", "schedule", "cleaner", "reservation")):
+    if any(_contains_signal(context, term) for term in ("booking", "appointment", "schedule", "professional", "reservation")):
         return "booking"
     if any(_contains_signal(context, term) for term in ("api", "webhook", "etl", "warehouse", "sync", "connector", "integration")):
         return "data-integration"
@@ -513,36 +553,36 @@ def _detect_profile(context: str) -> str:
 
 def _problem_question(profile: str) -> str:
     return {
-        "booking": "Where does the current booking process break down most - availability, confirmation, reassignment, or follow-up - and which outcome must improve first?",
-        "healthcare": "Which care-coordination failure causes the most harmful delay or uncertainty today, and what observable outcome must improve first?",
-        "payment": "Which money-movement problem is most costly today - failed collection, slow approval, reconciliation effort, or disputes - and what must improve first?",
-        "ai": "Which user decision or task should AI improve first, and what current failure would make an AI-assisted result unacceptable?",
-        "data-integration": "Which broken data hand-off creates the most rework or unreliable decisions today, and what outcome should the first release improve?",
-        "saas": "Which team workflow loses the most time or control today, and what result must the first release improve before adding broader features?",
-        "general": "Which part of the current process creates the most avoidable delay, error, or frustration, and what observable outcome must improve first?",
+        "booking": "Which booking failure creates the greatest cost or loss of trust today?",
+        "healthcare": "Which care-coordination failure creates the greatest harm today?",
+        "payment": "Which money-movement failure creates the greatest cost today?",
+        "ai": "Which AI-assisted task failure creates the greatest user harm today?",
+        "data-integration": "Which broken data hand-off creates the greatest rework today?",
+        "saas": "Which team-workflow failure creates the greatest delay today?",
+        "general": "Which current-process failure creates the greatest avoidable delay or error today?",
     }[profile]
 
 
 def _users_question(profile: str) -> str:
     return {
-        "booking": "When a booking changes after it is requested, who may confirm, reassign, cancel, or override it, and who only needs to be informed?",
-        "healthcare": "During the core care hand-off, which roles may create, approve, correct, and view the record, and who owns unresolved exceptions?",
-        "payment": "Who may initiate, approve, reverse, and investigate a payment, and which of those actions must never belong to the same role?",
-        "ai": "Who submits work to the AI, who may accept or correct its output, and which decisions require a separate human reviewer?",
-        "data-integration": "Who owns the source data, who resolves rejected records, and who may approve a corrected synchronization?",
-        "saas": "Within each customer workspace, who may configure access, perform the core work, approve it, and inspect activity across the team?",
-        "general": "Who starts the core process, who completes it, who may approve or override the result, and who only needs visibility?",
+        "booking": "Which named role has authority to confirm a booking request?",
+        "healthcare": "Which named role accepts responsibility for a care hand-off?",
+        "payment": "Which named role has authority to approve a payment?",
+        "ai": "Which named role accepts an AI-assisted result?",
+        "data-integration": "Which named role owns correction of a rejected record?",
+        "saas": "Which named role has final approval authority in a workspace?",
+        "general": "Which named role has final authority over the core result?",
     }[profile]
 
 
 def _stakeholder_question(profile: str) -> str:
     subject = {"healthcare": "safety or privacy", "payment": "financial control", "ai": "AI safety", "data-integration": "data ownership"}.get(profile, "scope or operational")
-    return f"When a {subject} decision conflicts with delivery speed, who has final authority, and who must approve the release?"
+    return f"Which named owner has final authority when a {subject} decision conflicts with delivery speed?"
 
 
 def _scope_question(profile: str) -> str:
     journey = {"booking": "booking journey from request through completion", "healthcare": "care hand-off from creation through acknowledgment", "payment": "payment journey from initiation through final status", "ai": "AI-assisted task from input through human acceptance", "data-integration": "record journey from source through validated destination", "saas": "team workflow from submission through approval"}.get(profile, "core user outcome from start through completion")
-    return f"For the first release, which complete {journey} must work reliably, and which adjacent capability should deliberately wait?"
+    return f"Which single completed {journey} belongs in the first release?"
 
 
 def _exclusions_question(profile: str) -> str:
@@ -552,79 +592,79 @@ def _exclusions_question(profile: str) -> str:
 
 def _workflow_question(profile: str) -> str:
     return {
-        "booking": "After a customer requests a slot, what should happen through completion, including recovery from a conflict, non-response, cancellation, or missed notification?",
-        "healthcare": "From the first hand-off entry to confirmed receipt, how should each role recover when information is incomplete, urgent, rejected, or never acknowledged?",
-        "payment": "From payment initiation to final status, how should each role recover when approval expires, the provider times out, or settlement disagrees?",
-        "ai": "From user input to accepted output, where must the product validate, explain uncertainty, request human review, or recover from an unsafe or unusable result?",
-        "data-integration": "From source change to accepted destination record, how should validation, duplicates, partial failure, retry, and human correction work?",
-        "saas": "From submission to approval and completion, how should the workflow recover when an approver is absent, rejects the work, or the deadline passes?",
-        "general": "From the first user action to a completed result, how should the workflow recover when information is incomplete, approval is delayed, or the action fails?",
+        "booking": "What exact event moves a requested booking into the confirmed state?",
+        "healthcare": "What exact event moves a care hand-off into the accepted state?",
+        "payment": "What exact event moves a payment into its final status?",
+        "ai": "What exact event moves AI-assisted work into the accepted state?",
+        "data-integration": "What exact event moves a source record into the accepted destination state?",
+        "saas": "What exact event moves submitted work into the approved state?",
+        "general": "What exact event moves the core work into its successful state?",
     }[profile]
 
 
 def _entities_question(profile: str) -> str:
     return {
-        "booking": "For customer addresses, access instructions, availability, and booking history, who may view or change each item, and when should access end?",
-        "healthcare": "Which patient and hand-off details are essential, who owns corrections, and when must access, retention, or deletion differ by role?",
-        "payment": "Which payment, approval, refund, and reconciliation records are authoritative, who may correct them, and what audit history must remain immutable?",
-        "ai": "Which prompts, source data, outputs, feedback, and review decisions may be stored, who owns them, and which must be deleted or excluded from training?",
-        "data-integration": "Which system is authoritative for each shared record, how are versions and duplicates identified, and who may correct rejected data?",
-        "saas": "Which records belong to a customer workspace, which may cross workspace boundaries, and what must happen to them when access or a subscription ends?",
-        "general": "Which records are essential to the core workflow, who owns each record, and when may different roles view, change, retain, or delete it?",
+        "booking": "Which booking record is authoritative for confirmation status?",
+        "healthcare": "Which care hand-off record is authoritative for acceptance status?",
+        "payment": "Which payment record is authoritative for final status?",
+        "ai": "Which AI-assisted work record is authoritative for acceptance status?",
+        "data-integration": "Which shared record is authoritative for destination status?",
+        "saas": "Which workspace record is authoritative for approval status?",
+        "general": "Which named record is authoritative for the core workflow?",
     }[profile]
 
 
 def _integrations_question(profile: str) -> str:
     return {
-        "booking": "If the first release uses reminders or calendar updates, which actions would depend on an external service, and what should users see or do when delivery fails?",
-        "healthcare": "Which existing clinical or identity system must exchange hand-off data, which system remains authoritative, and how should an outage affect care work?",
-        "payment": "Which payment or identity provider owns each external status, and how should retries, duplicate callbacks, outages, and reconciliation differences be handled?",
-        "ai": "Which model or retrieval service is required, what data may be sent to it, and what usable fallback should remain when it is unavailable?",
-        "data-integration": "For the highest-value data exchange, which system is authoritative, what triggers synchronization, and how should partial failure or replay be resolved?",
-        "saas": "Which external service is essential to the first team workflow, what data crosses the boundary, and what remains usable during an outage?",
-        "general": "Which external service is essential to the core outcome, what data would cross that boundary, and what should remain usable if it is unavailable?",
+        "booking": "Which external service is essential to the first-release booking outcome?",
+        "healthcare": "Which external clinical or identity service is essential to the care hand-off?",
+        "payment": "Which external provider is authoritative for final payment status?",
+        "ai": "Which model or retrieval service is essential to the AI-assisted task?",
+        "data-integration": "Which source system is authoritative for the highest-value data exchange?",
+        "saas": "Which external service is essential to the first team workflow?",
+        "general": "Which external service is essential to the core outcome?",
     }[profile]
 
 
 def _quality_question(profile: str) -> str:
     return {
-        "booking": "At launch, which failure is least acceptable - a double-booking, exposed address, missed notification, or slow mobile booking - and what measurable target should prevent it?",
-        "healthcare": "Which launch failure is least acceptable - missed acknowledgment, incorrect access, unavailable hand-off data, or an untraceable edit - and what target would be safe enough?",
-        "payment": "Which launch failure is least acceptable - duplicate charge, unauthorized approval, inconsistent status, or delayed recovery - and what measurable target should govern it?",
-        "ai": "Which quality failure is least acceptable - unsupported claims, unsafe output, private-data exposure, or excessive latency - and how will it be measured before launch?",
-        "data-integration": "Which quality failure is least acceptable - lost records, duplicates, stale data, or silent rejection - and what measurable freshness or accuracy target is required?",
-        "saas": "Which quality failure would most damage trust - cross-workspace access, lost work, unavailable approval, or slow core screens - and what launch target is required?",
-        "general": "Which failure would most damage trust in the core workflow - unauthorized access, lost work, unavailable service, or slow completion - and what measurable launch target is required?",
+        "booking": "Which booking-quality failure is least acceptable at launch?",
+        "healthcare": "Which care-quality failure is least acceptable at launch?",
+        "payment": "Which payment-quality failure is least acceptable at launch?",
+        "ai": "Which AI-quality failure is least acceptable at launch?",
+        "data-integration": "Which data-quality failure is least acceptable at launch?",
+        "saas": "Which workspace-quality failure is least acceptable at launch?",
+        "general": "Which core-workflow quality failure is least acceptable at launch?",
     }[profile]
 
 
 def _risk_question(profile: str) -> str:
     return {
-        "healthcare": "Which realistic failure could delay care, expose patient information, or hide accountability, and where must prevention or human escalation occur?",
-        "payment": "Which realistic failure could lose money or trust - duplicate processing, fraud, incorrect reversal, or unreconciled status - and who must detect and resolve it?",
-        "ai": "Which AI failure could cause the most harm, and which output must be blocked, labeled uncertain, or escalated to a human?",
-        "data-integration": "Which silent data failure could produce the worst downstream decision, and how should it be detected, contained, and replayed?",
-        "booking": "Which booking failure would create the most customer or operational harm, and who should detect, communicate, and resolve it?",
-        "saas": "Which permission, availability, or adoption failure could invalidate the release, and who owns detection and recovery?",
-        "general": "Which credible failure could most harm users or invalidate the release, and who should detect, communicate, and recover from it?",
+        "healthcare": "Which realistic care failure could create the greatest harm?",
+        "payment": "Which realistic payment failure could create the greatest loss?",
+        "ai": "Which realistic AI failure could create the greatest harm?",
+        "data-integration": "Which silent data failure could create the worst downstream decision?",
+        "booking": "Which realistic booking failure could create the greatest customer harm?",
+        "saas": "Which realistic workspace failure could invalidate the release?",
+        "general": "Which credible failure could most harm users or invalidate the release?",
     }[profile]
 
 
 def _rules_question(profile: str) -> str:
     return {
-        "booking": "Which booking decisions require an explicit rule - confirmation, assignment, cancellation, refund, or override - and which role owns each exception?",
-        "healthcare": "Which hand-off actions require acknowledgment, escalation, correction approval, or restricted access, and who may override those rules in an emergency?",
-        "payment": "Which limits, approvals, refund conditions, or separation-of-duty rules must be enforced before money can move?",
-        "ai": "Which inputs or outputs must be blocked, require human approval, or retain an explanation before the user may act on them?",
-        "data-integration": "Which validation, deduplication, conflict, and correction rules decide whether a record is accepted automatically or sent for review?",
-        "saas": "Which actions require workspace-level permission, approval, or an immutable audit event, and who may override them?",
-        "general": "Which approval, eligibility, calculation, or access decision must the product enforce consistently, and who may authorize an exception?",
+        "booking": "Which booking decision must the product enforce with an explicit rule?",
+        "healthcare": "Which care hand-off decision must the product enforce with an explicit rule?",
+        "payment": "Which money-movement decision must the product enforce with an explicit rule?",
+        "ai": "Which AI-assisted decision must the product enforce with an explicit rule?",
+        "data-integration": "Which record-acceptance decision must the product enforce with an explicit rule?",
+        "saas": "Which workspace decision must the product enforce with an explicit rule?",
+        "general": "Which consequential decision must the product enforce with an explicit rule?",
     }[profile]
 
 
 def _metrics_question(profile: str) -> str:
     measure = {"booking": "fewer booking conflicts or faster confirmed bookings", "healthcare": "faster acknowledged hand-offs without safety or privacy incidents", "payment": "more successful payments with less reconciliation effort", "ai": "more accepted outputs without increasing unsafe or incorrect results", "data-integration": "fresher accepted data with fewer manual corrections", "saas": "faster completed team work with fewer approval delays"}.get(profile, "faster successful completion with fewer errors")
-    return f"Which single result should prove the first release worked - such as {measure} - and what baseline, target, and review period should be used?"
+    return f"Which event should the metric numerator count to measure {measure}?"
 
 
 def _decision_options(payload: DiscoveryPlanningRequest, question: DiscoveryQuestion) -> list[DiscoveryChoiceOption]:
@@ -637,21 +677,22 @@ def _decision_options(payload: DiscoveryPlanningRequest, question: DiscoveryQues
             "payment": [("failed-collection", "Reduce failed collection", "Prioritizes provider status, retry behavior, and customer recovery."), ("approval-delay", "Shorten approval time", "Prioritizes authority, limits, expiry, and escalation."), ("reconciliation-work", "Reduce reconciliation work", "Prioritizes authoritative statuses, audit history, and exception queues.")],
         }.get(profile, [("delay", "Reduce avoidable delay", "Prioritizes hand-offs, status visibility, and response deadlines."), ("errors", "Prevent costly errors", "Prioritizes validation, ownership, and recoverable failure handling."), ("visibility", "Make work visible", "Prioritizes trustworthy status, responsibility, and exception reporting.")]),
         "USERS": [("operator-decides", "Operator owns routine decisions", "Keeps day-to-day work fast while reserving exceptions for an approver."), ("approver-controls", "Approver confirms consequential actions", "Adds control and auditability but requires response deadlines and escalation."), ("shared-responsibility", "Responsibility changes by state", "Supports realistic hand-offs but requires explicit permissions for every transition.")],
-        "STAKEHOLDERS": [("product-owner", "Product owner has final authority", "Keeps scope decisions centralized and requires specialist sign-off for defined risks."), ("operational-owner", "Operational owner has final authority", "Prioritizes real-world process fit and day-to-day accountability."), ("joint-approval", "Joint business and risk approval", "Adds protection for consequential releases but can lengthen decision time.")],
+        "STAKEHOLDERS": [("product-owner", "Product owner decides scope while named specialists sign off defined risks", "Keeps scope authority explicit and prevents specialist acceptance from being implied."), ("operational-owner", "Named operational owner decides routine policy while a risk owner may block unsafe release", "Separates day-to-day accountability from the authority to stop a consequential release."), ("joint-approval", "Named business and risk owners must both approve consequential releases", "Adds protection for consequential releases but requires a response deadline and escalation path.")],
         "SCOPE": [("complete-thin-slice", "One complete end-to-end journey", "Delivers a usable outcome including errors and recovery before adding breadth."), ("operator-first", "Internal operation first", "Validates process and controls before exposing a customer-facing experience."), ("self-service-first", "User self-service first", "Prioritizes the external experience while keeping complex exceptions manual.")],
         "EXCLUSIONS": [("advanced-automation", "Advanced automation waits", "Keeps consequential decisions human-controlled in the first release."), ("historical-migration", "Historical migration waits", "Reduces data-cleaning risk by starting with new or essential records."), ("nonessential-integrations", "Non-essential integrations wait", "Protects the core journey from external dependency and support risk."), ("native-apps", "Native mobile applications wait", "Uses a responsive web experience before funding separate platform builds.")],
         "WORKFLOWS": [("manual-exception", "Send exceptions to a human queue", "Keeps edge cases visible and recoverable without pretending they are automated."), ("bounded-auto-retry", "Retry automatically, then escalate", "Handles temporary failures quickly while preventing silent infinite retries."), ("stop-and-explain", "Stop and explain the next action", "Avoids uncertain state changes and tells the responsible person how to recover.")],
-        "ENTITIES": [("least-privilege", "Access only while needed", "Limits sensitive record visibility by role and workflow state."), ("owner-controlled", "Record owner controls sharing", "Gives the accountable user control but needs administrative recovery rules."), ("policy-controlled", "Organization policy controls access", "Provides consistency and auditability across users and teams."), ("immutable-history", "Keep an immutable change history", "Supports disputes and audits but increases retention and privacy considerations.")],
+        "ENTITIES": [("least-privilege", "Role- and state-based access ends when workflow responsibility ends", "Limits sensitive record visibility and requires an auditable removal event at the state transition."), ("owner-controlled", "Named record owner approves sharing and an administrator handles documented recovery", "Makes ownership explicit without granting silent administrative access."), ("policy-controlled", "Versioned organization policy controls access and every grant or denial is audited", "Provides consistency and traceability across users and teams."), ("immutable-history", "Corrections append to immutable history while the current record remains clearly identified", "Supports disputes and audits without silently overwriting prior values.")],
         "INTEGRATIONS": [("required-live", "Required for the live journey", "The core action waits or fails clearly when the external service is unavailable."), ("queued-degraded", "Queue work during an outage", "Users may continue, with visible pending status and controlled retry."), ("manual-fallback", "Provide a manual fallback", "Preserves essential work but requires later reconciliation."), ("defer-integration", "Defer it from the first release", "Keeps the initial product self-contained until the core workflow is proven.")],
         "QUALITY_GOALS": [("security-first", "Prevent unauthorized access", "Prioritizes permission tests, secure defaults, and auditable access failures."), ("integrity-first", "Prevent lost or inconsistent work", "Prioritizes validation, idempotency, backups, and visible recovery."), ("reliability-first", "Keep the core journey available", "Prioritizes monitoring, graceful degradation, and recovery targets."), ("speed-first", "Keep the core action responsive", "Prioritizes a measured response-time target on realistic devices and load.")],
-        "CONSTRAINTS": [("date-fixed", "Launch date is fixed", "Scope must shrink before quality or critical controls are compromised."), ("budget-fixed", "Budget and team are fixed", "The release must favor a smaller thin slice and managed services."), ("platform-fixed", "Platform or technology is fixed", "Architecture choices must fit an existing environment even when alternatives are simpler."), ("scope-fixed", "Required scope is fixed", "Time, staffing, or phased delivery must absorb the uncertainty.")],
-        "RISKS": [("prevent", "Prevent the failure by design", "Use validation, permissions, and safe defaults before the harmful action can occur."), ("detect-recover", "Detect quickly and recover", "Use monitoring, audit history, alerts, and a tested recovery owner."), ("human-review", "Require human review", "Route consequential or ambiguous cases to an accountable person."), ("limit-impact", "Limit the blast radius", "Isolate users, records, or transactions so one failure cannot spread.")],
+        "CONSTRAINTS": [("date-fixed", "Keep the confirmed launch date fixed and reduce scope before weakening controls", "Requires the exact date to be confirmed before this becomes complete."), ("budget-fixed", "Keep the confirmed budget and team fixed and deliver a smaller complete journey", "Requires the exact budget and team boundary to be recorded."), ("platform-fixed", "Keep the confirmed platform fixed and move scope or schedule before replacing it", "Requires the exact platform or technology constraint to be named."), ("scope-fixed", "Keep the named required scope fixed and change staffing, schedule, or phasing instead", "Requires the non-negotiable scope items to be listed explicitly.")],
+        "RISKS": [("prevent", "Block the named failure with validation and safe defaults before harm occurs", "Requires the failure event, impact, and accountable control owner to be recorded."), ("detect-recover", "Named operations owner detects alerts, contains impact, and runs tested recovery", "Requires an observable detection signal and a specific recovery result."), ("human-review", "Accountable reviewer decides every consequential or ambiguous case before commit", "Requires the routed event, response deadline, and escalation behavior to be explicit."), ("limit-impact", "Isolate affected users or records and restore them through a tested recovery path", "Requires the failure boundary, detection event, and recovery owner to be named.")],
         "BUSINESS_RULES": [("strict-rule", "Always enforce the rule", "Consistency and control take priority; exceptions require a separate governed process."), ("role-override", "Allow a named role to override", "Supports unusual cases but requires a reason and audit event."), ("threshold-review", "Review only above a threshold", "Keeps routine work fast while escalating consequential cases."), ("manual-first", "Keep the decision manual initially", "Avoids invented automation until enough real examples define a safe rule.")],
         "METRICS": [("completion-time", "Time to successful completion", "Measures whether the core job becomes meaningfully faster."), ("failure-rate", "Failure or rework rate", "Measures whether the release prevents the errors it was designed to reduce."), ("successful-adoption", "Successful repeated use", "Measures whether intended users complete the workflow and return."), ("support-burden", "Support and exception volume", "Measures operational complexity that user activity alone can hide.")],
     }
     raw = list(_profile_options(profile, category) or options_by_category[category])
     raw.append(("not-decided", "Not decided yet", "Keep this as an explicit open decision instead of turning a suggestion into a project fact."))
-    return [DiscoveryChoiceOption(key=key, label=label, description=description) for key, label, description in raw]
+    options = [DiscoveryChoiceOption(key=key, label=label, description=description) for key, label, description in raw]
+    return _contextualize_options(payload, options)
 
 
 def _profile_options(profile: str, category: str) -> list[tuple[str, str, str]]:
@@ -659,7 +700,7 @@ def _profile_options(profile: str, category: str) -> list[tuple[str, str, str]]:
         ("booking", "USERS"): [
             ("owner-controls", "Owner controls confirmation and overrides", "Keeps schedule authority with the business owner and requires a response deadline for pending requests."),
             ("customer-cutoff", "Customer controls changes before a cutoff", "Enables self-service while requiring an explicit cutoff and clear handling after that point."),
-            ("cleaner-assignment", "Cleaner accepts or declines assignments", "Gives cleaners control over availability without allowing them to change price or customer terms."),
+            ("professional-assignment", "Assigned professionals accept or decline work without changing customer terms", "Gives the assigned professional control over availability while price and customer terms remain owner-controlled."),
             ("state-based-authority", "Authority changes with booking status", "Fits real hand-offs but requires permissions for pending, confirmed, in-progress, and completed states."),
         ],
         ("saas", "USERS"): [
@@ -696,7 +737,7 @@ def _profile_options(profile: str, category: str) -> list[tuple[str, str, str]]:
         ("booking", "SCOPE"): [
             ("closed-booking", "Complete booking journey", "Covers request, confirmation, assignment, changes, completion, and visible recovery."),
             ("operations-first", "Owner scheduling first", "Proves availability and assignment controls before broader customer self-service."),
-            ("customer-first", "Customer booking first", "Prioritizes request and status while owners handle unusual conflicts manually."),
+            ("customer-first", "Customers request and track bookings while owners resolve exceptional conflicts", "Keeps the customer journey self-service while a named owner handles unusual scheduling conflicts manually."),
         ],
         ("saas", "SCOPE"): [
             ("request-decision", "Request-to-decision journey", "Covers submission, policy validation, approval, rejection, history, and completion."),
@@ -743,7 +784,7 @@ def _profile_options(profile: str, category: str) -> list[tuple[str, str, str]]:
         ("booking", "BUSINESS_RULES"): [
             ("change-cutoff", "Changes follow a clear cutoff", "Defines when customers may self-serve and when an owner must decide the exception."),
             ("availability-before-confirm", "Availability is rechecked before confirmation", "Prevents stale schedules from creating a confirmed conflict during simultaneous requests."),
-            ("assignment-acceptance", "Cleaner acceptance has a deadline", "Keeps bookings from waiting indefinitely and defines reassignment after silence."),
+            ("assignment-acceptance", "Professional acceptance expires at a confirmed deadline and then reassigns", "Keeps bookings from waiting indefinitely and makes reassignment after silence an explicit state transition."),
             ("override-reason", "Owner overrides require a reason", "Allows exceptional handling while preserving who changed the normal rule and why."),
         ],
         ("healthcare", "WORKFLOWS"): [
@@ -827,41 +868,101 @@ def _validated_generated_options(
     payload: DiscoveryPlanningRequest,
     raw_options: object,
 ) -> list[DiscoveryChoiceOption]:
+    options, _ = _generated_options_with_rejections(payload, raw_options)
+    return options
+
+
+def _generated_options_with_rejections(
+    payload: DiscoveryPlanningRequest,
+    raw_options: object,
+) -> tuple[list[DiscoveryChoiceOption], list[str]]:
+    """Return accepted choices and safe, precise rejection reasons for repair."""
     if not isinstance(raw_options, list):
-        return []
+        return [], ["options was not an array"]
     options: list[DiscoveryChoiceOption] = []
+    rejections: list[str] = []
     seen_keys: set[str] = set()
     seen_labels: set[str] = set()
-    for raw in raw_options[:6]:
+    project_terms = _distinctive_project_terms(payload)
+    for index, raw in enumerate(raw_options[:6], start=1):
         if not isinstance(raw, dict):
+            rejections.append(f"choice {index} was not an object")
             continue
         try:
             option = DiscoveryChoiceOption.model_validate(raw)
         except (TypeError, ValueError):
+            rejections.append(f"choice {index} did not match the key/label/description contract")
             continue
         normalized_label = option.label.casefold().strip()
         if option.key in seen_keys or normalized_label in seen_labels:
+            rejections.append(f"choice {index} duplicated another key or label")
             continue
-        if normalized_label in _SHALLOW_OPTION_LABELS or len(option.description.split()) < 5:
+        if normalized_label in _SHALLOW_OPTION_LABELS:
+            rejections.append(f"choice {index} used a shallow answer label")
+            continue
+        if not _is_operational_option(option):
+            rejections.append(
+                f"choice {index} did not state a complete actor/action/boundary/consequence decision"
+            )
             continue
         if option.key != "not-decided" and re.search(
             r"\b(?:not decided|not yet decided|undecided|unknown|unsure|maybe)\b", normalized_label
         ):
+            rejections.append(f"choice {index} disguised uncertainty under a different key")
             continue
         if _has_unsupported_numeric_claim(payload, option.label + " " + option.description):
+            rejections.append(f"choice {index} invented a numeric threshold or duration")
+            continue
+        if _has_unsupported_domain_term(payload, option.label + " " + option.description):
+            rejections.append(f"choice {index} introduced an unsupported domain role")
             continue
         if _looks_like_prompt_leak(option.label + " " + option.description):
+            rejections.append(f"choice {index} contained internal-instruction language")
+            continue
+        if option.key != "not-decided" and project_terms \
+                and not (_semantic_terms(option.label + " " + option.description) & project_terms):
+            rejections.append(f"choice {index} was not grounded in a distinctive project term")
             continue
         seen_keys.add(option.key)
         seen_labels.add(normalized_label)
         options.append(option)
-    if options and not any(option.key == "not-decided" for option in options):
-        options.append(DiscoveryChoiceOption(
-            key="not-decided",
-            label="Not decided yet",
-            description="Keep this as an explicit open decision rather than assuming an answer.",
-        ))
-    return options[:6]
+    if len(raw_options) > 6:
+        rejections.append("more than six choices were returned")
+    return options[:6], rejections
+
+
+def _is_operational_option(option: DiscoveryChoiceOption) -> bool:
+    """Require a choice to remain meaningful after it becomes confirmed evidence."""
+    rendered = f"{option.label}. {option.description}".casefold()
+    if option.key == "not-decided":
+        return True
+    return len(rendered.split()) >= 12 and any(term in rendered for term in (
+        " must ", " may ", " only ", " when ", " before ", " after ", " while ",
+        " requires ", " keeps ", " prevents ", " routes ", " owns ", " remains ",
+        " expires ", " retries ", " records ", " blocks ", " confirms ", " prioritizes ",
+    ))
+
+
+def _contextualize_options(
+    payload: DiscoveryPlanningRequest,
+    options: list[DiscoveryChoiceOption],
+) -> list[DiscoveryChoiceOption]:
+    """Keep answer choices tied to the same project context as the question."""
+    context = _project_context_phrase(payload)
+    project_terms = _distinctive_project_terms(payload)
+    if not context:
+        return options
+    contextualized: list[DiscoveryChoiceOption] = []
+    for option in options:
+        combined_terms = _semantic_terms(option.label + " " + option.description)
+        if project_terms and combined_terms & project_terms:
+            contextualized.append(option)
+            continue
+        description = f"For {context}, {option.description[0].lower() + option.description[1:]}"
+        if len(description) > 300:
+            description = description[:300].rsplit(" ", 1)[0].rstrip(" ,;:")
+        contextualized.append(option.model_copy(update={"description": description}))
+    return contextualized
 
 
 def _has_unsupported_numeric_claim(payload: DiscoveryPlanningRequest, value: str) -> bool:
@@ -873,22 +974,10 @@ def _has_unsupported_numeric_claim(payload: DiscoveryPlanningRequest, value: str
     return any(claim not in context for claim in claims)
 
 
-def _distinctive_prior_answer_terms(payload: DiscoveryPlanningRequest) -> set[str]:
-    project_terms = _semantic_terms(" ".join((
-        payload.project.name,
-        payload.project.description or "",
-        payload.project.type,
-        payload.project.industry or "",
-        payload.project.target_audience or "",
-    )))
-    prior_terms: set[str] = set()
-    for answer in payload.answers:
-        if answer.disposition == "ANSWERED" and answer.answer_text:
-            prior_terms.update(_semantic_terms(answer.answer_text))
-    return prior_terms - project_terms - {
-        "first", "release", "priority", "product", "system", "application", "confirmed",
-        "current", "should", "needs", "need", "must", "work", "works",
-    }
+def _has_unsupported_domain_term(payload: DiscoveryPlanningRequest, value: str) -> bool:
+    context = _context_text(payload)
+    lowered = value.casefold()
+    return "cleaner" in lowered and "cleaner" not in context
 
 
 def _validate_quality(
@@ -907,14 +996,18 @@ def _validate_quality(
     project_name = payload.project.name.strip().casefold()
     if len(project_name) >= 3 and project_name in text.casefold():
         raise ValueError("Planner mechanically inserted the project title instead of using its context")
-    if "roles within" in text.casefold() or any(pattern.search(text) for pattern in _GENERIC_PATTERNS):
+    project_terms = _distinctive_project_terms(payload)
+    specificity_matches = len(_semantic_terms(text) & project_terms)
+    if "roles within" in text.casefold() or (
+        any(pattern.search(text) for pattern in _GENERIC_PATTERNS)
+        and specificity_matches < min(2, len(project_terms))
+    ):
         raise ValueError("Planner question is generic or mechanically interpolated")
+    _validate_atomic_question(text)
     _validate_category_coverage(question.category, text)
-    expected_focus = _prior_decision_focus(payload, question.category)
-    if expected_focus is not None:
-        grounding_terms = _semantic_terms(expected_focus) | _distinctive_prior_answer_terms(payload)
-        if grounding_terms and not (_semantic_terms(text) & grounding_terms):
-            raise ValueError("Planner ignored a confirmed decision from an earlier answer")
+    required_matches = min(2, len(project_terms))
+    if required_matches and specificity_matches < required_matches:
+        raise ValueError("Planner question did not use distinctive project description or project-field context")
     if _is_semantic_duplicate(payload, text):
         raise ValueError("Planner question repeats an earlier question")
     _reject_unsupported_claims(payload, text + " " + why)
@@ -931,35 +1024,44 @@ def _validate_category_coverage(category: str, question_text: str) -> None:
     if category == "QUALITY_GOALS" and not re.search(
         r"(?:\bwhat\b[^?]{0,90}\b(?:measurable\s+)?(?:target|threshold|maximum|minimum)\b|"
         r"\bhow\s+(?:fast|quickly|often|many|reliably)\b|\bhow\b[^?]{0,50}\bmeasur|"
-        r"\bwithin\s+how\b|\bp95\b)",
+        r"\bwithin\s+how\b|\bp95\b|\bfailure\b)",
         lowered,
     ):
         raise ValueError("Planner question omitted a measurable quality threshold")
     requirements: dict[str, tuple[tuple[str, ...], ...]] = {
         "SCOPE": (
             ("first release", "initial release", "mvp", "launch"),
-            ("wait", "defer", "exclude", "out of scope", "boundary", "before adding"),
         ),
         "WORKFLOWS": (
-            ("fail", "conflict", "reject", "decline", "expire", "timeout", "non-response", "unanswered", "incomplete"),
-            ("recover", "resolve", "retry", "escalat", "hold", "alternative", "next"),
+            ("state", "status", "trigger", "start", "after", "when", "fail", "conflict", "recover", "complete"),
         ),
         "QUALITY_GOALS": (
-            ("measur", "target", "threshold", "maximum", "minimum", "within", "p95", "percent"),
+            ("failure", "measur", "target", "threshold", "maximum", "minimum", "within", "p95", "percent"),
         ),
         "METRICS": (
-            ("baseline", "current", "today", "existing", "%"),
-            ("target", "goal", "reduce", "increase", "below", "above"),
-            ("review period", "window", "weeks", "months", "after launch", "by when", "timeframe"),
+            ("baseline", "target", "numerator", "denominator", "rate", "window", "measure", "%"),
         ),
         "CONSTRAINTS": (
-            ("fixed", "non-negotiable", "strictly", "cannot move", "govern"),
-            ("move", "flexible", "may shift", "may shrink", "what must change"),
+            ("fixed", "non-negotiable", "strictly", "cannot move", "govern", "constraint", "boundary"),
         ),
     }
     for alternatives in requirements.get(category, ()):
         if not any(term in lowered for term in alternatives):
             raise ValueError(f"Planner question omitted a required {category.lower()} decision facet")
+
+
+def _validate_atomic_question(question_text: str) -> None:
+    """Reject the recurring actor/access/retention/lifecycle inventory question."""
+    lowered = question_text.casefold()
+    axes = (
+        ("actor", "role", "who", "customer", "operator", "professional"),
+        ("permission", "access", "view", "authorize", "approval", "override"),
+        ("retention", "retain", "delete", "deletion", "archive"),
+        ("lifecycle", "state", "status", "expire", "transition", "correction"),
+    )
+    matched_axes = sum(any(term in lowered for term in axis) for axis in axes)
+    if matched_axes >= 3:
+        raise ValueError("Planner question combines unrelated decision facets")
 
 
 def _is_semantic_duplicate(payload: DiscoveryPlanningRequest, question_text: str) -> bool:

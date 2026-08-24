@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import re
 from typing import Any
 
 
@@ -343,22 +344,77 @@ REGISTRY: tuple[StandardReference, ...] = (
 )
 
 
+# Keep the baseline small enough to be useful in an SRS review. The registry
+# intentionally contains broader reference material for other document types,
+# but marking every public framework as "applicable" obscures the standards
+# that actually constrain this project.
+_BASELINE_KEYS = frozenset({
+    "ISO_29148",
+    "ISO_42010",
+    "ISO_25010",
+    "ISO_29119",
+    "RFC_2119_8174",
+    "C4",
+})
+
+# Some registry terms are deliberately broad discovery tags. Narrow them when
+# making an applicability decision so words such as "platform", "service",
+# "data", or "model" do not activate unrelated standards.
+_DIRECT_APPLICABILITY_TERMS: dict[str, tuple[str, ...]] = {
+    "IIBA_BABOK": ("business analysis", "business requirements", "enterprise transformation"),
+    "ISO_20000_1": ("managed service", "service management", "support", "sla"),
+    "OPENAPI": ("api", "integration", "webhook", "http", "rest"),
+    "JSON_SCHEMA": ("api", "json schema", "json api", "json contract", "json payload"),
+    "UML": ("uml", "sequence diagram", "state machine", "domain model"),
+    "BPMN": ("bpmn", "business process", "multi-role", "handoff", "orchestration"),
+    "ISO_42001": ("artificial intelligence", "ai", "machine learning", "llm", "prediction", "generative ai"),
+    "NIST_AI_RMF": ("artificial intelligence", "ai", "machine learning", "llm", "prediction", "generative ai"),
+}
+
+_EXCLUSION_KEYS = frozenset({
+    "exclusion",
+    "exclusions",
+    "excluded",
+    "outofscope",
+    "outscope",
+    "notincluded",
+    "nongoals",
+    "nonfunctionalexclusions",
+})
+
+_NEGATION_PATTERN = re.compile(
+    r"\b(?:no|not|never|without|exclude(?:d|s|ing)?|out\s+of\s+scope|"
+    r"does\s+not|do\s+not|will\s+not|won't|isn't|aren't)\b",
+    re.IGNORECASE,
+)
+
+
 def applicable_standards(project: Any, confirmed_brief: dict[str, Any]) -> list[dict[str, str]]:
     """Return reviewable applicability decisions without asserting compliance."""
     project_values = (
         getattr(project, "name", ""), getattr(project, "description", ""),
         getattr(project, "type", ""),
     )
-    brief_values = _context_values(confirmed_brief)
-    context = " ".join((*map(str, project_values), *brief_values)).lower()
+    brief_values = _positive_context_values(confirmed_brief)
+    context = " ".join(
+        _positive_text_clauses(value)
+        for value in (*map(str, project_values), *brief_values)
+    ).casefold()
     selected: list[dict[str, str]] = []
     for standard in REGISTRY:
-        matched = [term for term in standard.applies_to if term != "all" and term in context]
-        if not standard.always and not matched:
+        if standard.always and standard.key not in _BASELINE_KEYS:
+            continue
+        candidate_terms = _DIRECT_APPLICABILITY_TERMS.get(standard.key, standard.applies_to)
+        matched = [
+            term for term in candidate_terms
+            if term != "all" and _contains_context_term(context, term)
+        ]
+        is_baseline = standard.key in _BASELINE_KEYS
+        if not is_baseline and not matched:
             continue
         reason = (
             "Baseline documentation quality control for every generated package."
-            if standard.always
+            if is_baseline
             else "Applicable context signal(s): " + ", ".join(sorted(set(matched))) + "."
         )
         selected.append({
@@ -396,7 +452,7 @@ def registry_payload() -> list[dict[str, str]]:
 
 
 def _context_values(value: Any) -> list[str]:
-    """Flatten bounded brief values for applicability without treating them as instructions."""
+    """Flatten bounded values for the public registry endpoint."""
     if isinstance(value, dict):
         return [text for item in value.values() for text in _context_values(item)]
     if isinstance(value, list):
@@ -404,3 +460,62 @@ def _context_values(value: Any) -> list[str]:
     if isinstance(value, (str, int, float, bool)):
         return [str(value)]
     return []
+
+
+def _positive_context_values(value: Any, *, key: str = "") -> list[str]:
+    """Flatten affirmative brief evidence while excluding explicit non-scope.
+
+    Applicability is a positive claim. A capability mentioned only under an
+    exclusion (for example, "payments" or "AI matching") is evidence that the
+    corresponding standard is *not* applicable, not a keyword hit.
+    """
+    normalized_key = re.sub(r"[^a-z0-9]", "", key.casefold())
+    if normalized_key in _EXCLUSION_KEYS:
+        return []
+    if isinstance(value, dict):
+        return [
+            text
+            for child_key, item in list(value.items())[:100]
+            for text in _positive_context_values(item, key=str(child_key))
+        ]
+    if isinstance(value, list):
+        return [
+            text
+            for item in value[:100]
+            for text in _positive_context_values(item, key=key)
+        ]
+    if isinstance(value, (str, int, float, bool)):
+        return [str(value)]
+    return []
+
+
+def _positive_text_clauses(value: str) -> str:
+    """Remove clauses that explicitly negate a context signal."""
+    # Commas often continue a negated enumeration ("excluded payment,
+    # analytics, AI, and admin"). Splitting on them would incorrectly turn the
+    # later items into affirmative applicability signals.
+    clauses = re.split(r"[;.\n]+|\bbut\b", value, flags=re.IGNORECASE)
+    positive: list[str] = []
+    for clause in clauses:
+        # Preserve the affirmative lead-in in natural phrases such as "a web
+        # app with no payments" or "fixed scope while excluded payment, AI"
+        # while excluding the entire comma-separated negated tail.
+        boundary = re.search(
+            r"\b(?:with|and|while)\s+(?:no|without|exclude(?:d|s|ing)?)\b",
+            clause,
+            re.IGNORECASE,
+        )
+        if boundary:
+            clause = clause[:boundary.start()]
+        if clause.strip() and not _NEGATION_PATTERN.search(clause):
+            positive.append(clause)
+    return " ".join(positive)
+
+
+def _contains_context_term(context: str, term: str) -> bool:
+    """Match a complete word or phrase, never an accidental substring."""
+    normalized = " ".join(str(term).casefold().split())
+    if not normalized:
+        return False
+    pattern = r"(?<![a-z0-9])" + r"\s+".join(map(re.escape, normalized.split())) + r"(?![a-z0-9])"
+    return re.search(pattern, context) is not None

@@ -29,16 +29,13 @@ returns a reproducible artifact result.
   mechanically interpolated wording, semantic repeats, unsupported compliance
   claims, shallow answer labels, missing uncertainty choices, and overloaded
   questions. It also rejects unsupported numeric targets and category-incomplete
-  questions: scope must include what waits, workflows include recovery, quality
-  includes a measurable threshold, metrics include baseline/target/review
-  window, and constraints identify what is fixed and what may move. A
-  decision-specific deterministic strategist remains the outage, invalid-output,
-  and clean-clone fallback.
-- Optional Gemini provider: `gemini-3.1-pro-preview` for SRS and document
-  generation, `gemini-3.6-flash` for discovery-question selection, and
-  `gemini-3.5-flash` only as the discovery fallback for retryable provider
-  failures. Document requests never fall through to a Flash model. The API key
-  is read only by this service through `GEMINI_API_KEY`.
+  questions. Completeness is accumulated through targeted follow-ups and the
+  server-owned readiness gate; provider failure or invalid output fails closed.
+- Optional Gemini provider: the exact `AI_SERVICE_MODEL` value is used for SRS
+  and document generation, while discovery is locked to `gemini-3.6-flash`.
+  Neither route silently switches models or persists deterministic fallback
+  content after provider failure. The API key is read only by this service
+  through `GEMINI_API_KEY`.
 
 ## Local run
 
@@ -55,9 +52,8 @@ uvicorn app.main:app --reload --port 8000
 
 The deterministic provider is the safe default. To use Gemini during local
 development, keep `GEMINI_API_KEY` in an uncommitted `.env`, set
-`AI_SERVICE_PROVIDER=gemini`, `AI_SERVICE_MODEL=gemini-3.1-pro-preview`,
-`AI_SERVICE_DISCOVERY_MODEL=gemini-3.6-flash`, and
-`AI_SERVICE_FALLBACK_MODEL=gemini-3.5-flash`. In staging and production, set `AI_SERVICE_INTERNAL_TOKEN` to a secret
+`AI_SERVICE_PROVIDER=gemini`, `AI_SERVICE_MODEL=gemini-3.1-flash-lite-preview`, and
+`AI_SERVICE_DISCOVERY_MODEL=gemini-3.6-flash`. In staging and production, set `AI_SERVICE_INTERNAL_TOKEN` to a secret
 provided through the deployment secret manager. The Spring Boot orchestrator
 must send the same value in `X-Internal-Token`.
 

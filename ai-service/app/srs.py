@@ -51,7 +51,7 @@ _SECTION_SPECS: tuple[tuple[str, str, str, str], ...] = (
     ("VERIFICATION_TRACEABILITY", "Verification and traceability strategy", "requirements", "Connects requirements to sources, acceptance criteria, tests, design, and releases."),
 )
 _SECTION_IDS = frozenset(item[0] for item in _SECTION_SPECS)
-_MIN_EXHAUSTIVE_NARRATIVE_WORDS = 20_000
+_MIN_EXHAUSTIVE_NARRATIVE_WORDS = 8_000
 _MIN_EXHAUSTIVE_PACKAGE_WORDS = 9_500
 _MAX_EXHAUSTIVE_PACKAGE_WORDS = 50_000
 _MIN_SUBSTANTIVE_SECTION_WORDS = 240
@@ -61,7 +61,16 @@ async def generate_srs(
     payload: SrsGenerationRequest, provider: GenerationProvider, *, correlation_id: str
 ) -> tuple[SrsArtifact, SrsValidation, str]:
     """Generate from confirmed brief + approved hits only. No source text is executable instruction."""
-    _check_evidence(payload.evidence)
+    _check_srs_input(payload)
+    if payload.generation_mode == "EXHAUSTIVE" and provider.name != "deterministic":
+        missing_discovery = _missing_discovery_issues(payload.confirmed_brief)
+        if missing_discovery:
+            raise AiServiceError(
+                ErrorCode.INSUFFICIENT_EVIDENCE,
+                "Exhaustive generation is locked until focused discovery resolves: "
+                + " ".join(missing_discovery),
+                status_code=422,
+            )
     generator = getattr(provider, "generate_srs", None)
     if provider.name != "deterministic" and callable(generator):
         try:
@@ -69,28 +78,22 @@ async def generate_srs(
         except AiServiceError as exc:
             if not exc.retryable:
                 raise
-            if payload.generation_mode == "EXHAUSTIVE":
-                logger.warning(
-                    "provider_srs_unavailable_exhaustive_generation_aborted code=%s correlation_id=%s",
-                    exc.code,
-                    correlation_id,
-                )
-                raise AiServiceError(
-                    exc.code,
-                    "Exhaustive SRS generation requires the configured document model. The draft was not replaced with a reduced fallback; please retry when the provider is available.",
-                    status_code=exc.status_code,
-                    retryable=True,
-                ) from exc
             logger.warning(
-                "provider_srs_unavailable_using_deterministic_fallback code=%s correlation_id=%s",
+                "provider_srs_unavailable_generation_aborted mode=%s code=%s correlation_id=%s",
+                payload.generation_mode,
                 exc.code,
                 correlation_id,
             )
-            artifact = _deterministic_srs(payload)
-            model = "deterministic-srs-fallback"
+            raise AiServiceError(
+                exc.code,
+                "SRS generation requires the configured document model. The draft was not replaced with a reduced fallback; please retry when the provider is available.",
+                status_code=exc.status_code,
+                retryable=True,
+            ) from exc
         else:
             try:
                 candidate: Any = _parse_provider_json(raw.output) if isinstance(raw.output, str) else raw.output
+                candidate = _quarantine_invalid_provider_records(candidate, correlation_id=correlation_id)
                 artifact = SrsArtifact.model_validate(candidate)
             except ValidationError as exc:
                 issues = [
@@ -138,6 +141,19 @@ async def generate_srs(
     artifact = _compile_master_srs(artifact, payload)
     manifest = dict(artifact.generation_manifest)
     source_context = manifest.get("source_context", [])
+    provider_workstreams = [
+        dict(item) for item in manifest.get("workstreams", []) if isinstance(item, dict)
+    ]
+    if not provider_workstreams:
+        provider_workstreams = [{
+            "id": "deterministic_compiler",
+            "requested_model": provider.model,
+            "actual_model": model,
+            "raw_requirement_count": len(artifact.requirements),
+            "accepted_requirement_count": len(artifact.requirements),
+            "retry_count": 0,
+            "validation_status": "COMPILED_TEST_PROVIDER",
+        }]
     section_contracts = []
     for contract in manifest.get("section_contracts", []):
         if isinstance(contract, dict):
@@ -165,27 +181,83 @@ async def generate_srs(
             "compiled_section_ids": [section.id for section in artifact.narrative_sections],
             "compiled_narrative_words": sum(_word_count(section.content) for section in artifact.narrative_sections),
         },
-        "workstreams": [
-            {"id": item, "requested_model": provider.model, "actual_model": model, "retry_count": 0, "validation_status": "PASSED"}
-            for item in (
-                ["product", "data_interfaces", "trust", "quality_operations"]
-                if payload.generation_mode == "EXHAUSTIVE" else ["complete_core"]
-            )
-        ],
+        "workstream_count": len(provider_workstreams),
+        "workstreams": provider_workstreams,
         "section_contracts": section_contracts,
     })
     artifact = artifact.model_copy(update={"generation_manifest": manifest})
     validation = validate_srs(artifact, payload.evidence, payload.confirmed_brief)
     if provider.name == "gemini" and payload.generation_mode == "EXHAUSTIVE":
-        depth_issues = _exhaustive_depth_issues(artifact)
+        depth_issues = _exhaustive_depth_issues(artifact, payload)
         if depth_issues:
             validation = validation.model_copy(update={
                 "valid": False,
-                "issues": [*validation.issues, *depth_issues],
+                "issues": [*validation.issues, *depth_issues][:100],
             })
+    if not validation.valid and provider.name == "gemini" and payload.generation_mode == "EXHAUSTIVE":
+        quality_repairer = getattr(provider, "repair_srs_quality", None)
+        if callable(quality_repairer):
+            repaired = await quality_repairer(
+                payload,
+                artifact,
+                issues=validation.issues,
+                correlation_id=correlation_id,
+            )
+            if repaired.model and repaired.model != model:
+                raise AiServiceError(
+                    ErrorCode.PROVIDER_INVALID_OUTPUT,
+                    "The final SRS quality repair changed models and was rejected.",
+                    status_code=502,
+                )
+            artifact = _apply_quality_repair(artifact, repaired.output)
+            repaired_words = sum(_word_count(section.content) for section in artifact.narrative_sections)
+            repaired_manifest = dict(artifact.generation_manifest)
+            repaired_provenance = dict(repaired_manifest.get("long_form_provenance", {}))
+            repaired_provenance.update({
+                "model_authored_section_ids": [section.id for section in artifact.narrative_sections],
+                "model_authored_narrative_words": repaired_words,
+                "compiled_narrative_words": repaired_words,
+            })
+            repaired_manifest.update({
+                "retry_count": int(repaired_manifest.get("retry_count", 0) or 0) + 1,
+                "quality_repair": {
+                    "attempted": True,
+                    "succeeded": True,
+                    "requested_model": model,
+                    "actual_model": repaired.model or model,
+                    "input_tokens": repaired.usage.input_tokens,
+                    "output_tokens": repaired.usage.output_tokens,
+                },
+                "long_form_provenance": repaired_provenance,
+            })
+            artifact = artifact.model_copy(update={"generation_manifest": repaired_manifest})
+            validation = validate_srs(artifact, payload.evidence, payload.confirmed_brief)
+            depth_issues = _exhaustive_depth_issues(artifact, payload)
+            if depth_issues:
+                validation = validation.model_copy(update={
+                    "valid": False,
+                    "issues": [*validation.issues, *depth_issues][:100],
+                })
+    if any("repeats the adjacent word" in issue for issue in validation.issues):
+        artifact = _normalize_adjacent_duplicate_words(artifact)
+        validation = validate_srs(artifact, payload.evidence, payload.confirmed_brief)
+        if provider.name == "gemini" and payload.generation_mode == "EXHAUSTIVE":
+            depth_issues = _exhaustive_depth_issues(artifact, payload)
+            if depth_issues:
+                validation = validation.model_copy(update={
+                    "valid": False,
+                    "issues": [*validation.issues, *depth_issues][:100],
+                })
     if any("is not expressed as a testable shall statement." in issue for issue in validation.issues):
         artifact = _normalize_shall_statements(artifact)
         validation = validate_srs(artifact, payload.evidence, payload.confirmed_brief)
+        if provider.name == "gemini" and payload.generation_mode == "EXHAUSTIVE":
+            depth_issues = _exhaustive_depth_issues(artifact, payload)
+            if depth_issues:
+                validation = validation.model_copy(update={
+                    "valid": False,
+                    "issues": [*validation.issues, *depth_issues][:100],
+                })
     if not validation.valid:
         logger.warning(
             "provider_srs_quality_invalid issues=%s citation_coverage=%s correlation_id=%s",
@@ -216,6 +288,109 @@ def _word_count(value: str) -> int:
     return len(re.findall(r"\b[\w][\w'-]*\b", value))
 
 
+def _apply_quality_repair(artifact: SrsArtifact, output: dict[str, Any] | str) -> SrsArtifact:
+    """Apply only exact-ID, fully validated model-authored replacements."""
+    try:
+        patch = _parse_provider_json(output) if isinstance(output, str) else output
+        if not isinstance(patch, dict) or set(patch) != {"requirements", "narrative_sections"}:
+            raise ValueError("Quality repair must contain exactly requirements and narrative_sections.")
+        requirements = [SrsRequirement.model_validate(item) for item in patch["requirements"]]
+        sections = [SrsNarrativeSection.model_validate(item) for item in patch["narrative_sections"]]
+    except (KeyError, TypeError, ValueError, ValidationError) as exc:
+        raise AiServiceError(
+            ErrorCode.PROVIDER_INVALID_OUTPUT,
+            "The final SRS quality repair failed server validation.",
+            status_code=502,
+        ) from exc
+    existing_requirement_ids = {item.id for item in artifact.requirements}
+    existing_section_ids = {item.id for item in artifact.narrative_sections}
+    replacement_requirement_ids = [item.id for item in requirements]
+    replacement_section_ids = [item.id for item in sections]
+    if (
+        len(set(replacement_requirement_ids)) != len(replacement_requirement_ids)
+        or not set(replacement_requirement_ids).issubset(existing_requirement_ids)
+        or set(replacement_section_ids) != existing_section_ids
+        or len(replacement_section_ids) != len(existing_section_ids)
+    ):
+        raise AiServiceError(
+            ErrorCode.PROVIDER_INVALID_OUTPUT,
+            "The final SRS quality repair attempted an unbounded ID change.",
+            status_code=502,
+        )
+    requirement_by_id = {item.id: item for item in requirements}
+    section_by_id = {item.id: item for item in sections}
+    return artifact.model_copy(update={
+        "requirements": [requirement_by_id.get(item.id, item) for item in artifact.requirements],
+        "narrative_sections": [section_by_id[item.id] for item in artifact.narrative_sections],
+    })
+
+
+def _quarantine_invalid_provider_records(candidate: Any, *, correlation_id: str) -> Any:
+    """Validate all nested provider records without silently deleting any.
+
+    A previous implementation quarantined individual invalid records and let
+    the compiler fill the resulting holes. That could turn four provider
+    records into three while the final manifest still appeared successful.
+    The quarantine boundary is now the whole candidate: one malformed nested
+    record rejects the draft and preserves the last canonical version.
+    """
+    if not isinstance(candidate, dict):
+        return candidate
+
+    normalized = dict(candidate)
+    quarantined: list[dict[str, Any]] = []
+    for field, model_type in (
+        ("narrative_sections", SrsNarrativeSection),
+        ("workflows", SrsWorkflow),
+        ("quality_scenarios", SrsQualityScenario),
+        ("requirements", SrsRequirement),
+    ):
+        records = normalized.get(field)
+        if not isinstance(records, list):
+            continue
+        accepted: list[dict[str, Any]] = []
+        for index, record in enumerate(records):
+            if model_type is SrsRequirement and (
+                not isinstance(record, dict) or "success_result" not in record
+            ):
+                quarantined.append({
+                    "field": field,
+                    "index": index,
+                    "id": record.get("id") if isinstance(record, dict) else None,
+                    "issues": [{"location": "success_result", "type": "missing"}],
+                })
+                continue
+            try:
+                accepted.append(model_type.model_validate(record).model_dump(mode="json"))
+            except ValidationError as exc:
+                quarantined.append({
+                    "field": field,
+                    "index": index,
+                    "id": record.get("id") if isinstance(record, dict) else None,
+                    "issues": [
+                        {
+                            "location": ".".join(str(part) for part in issue.get("loc", ())),
+                            "type": issue.get("type", "unknown"),
+                        }
+                        for issue in exc.errors()
+                    ],
+                })
+        normalized[field] = accepted
+
+    if quarantined:
+        logger.warning(
+            "provider_srs_candidate_quarantined records=%s correlation_id=%s",
+            quarantined,
+            correlation_id,
+        )
+        raise AiServiceError(
+            ErrorCode.PROVIDER_INVALID_OUTPUT,
+            "The provider returned one or more malformed SRS records; the complete draft was rejected.",
+            status_code=502,
+        )
+    return normalized
+
+
 def _evidence_aware_narrative_target(payload: SrsGenerationRequest) -> int:
     """Scale the depth floor to the information actually available.
 
@@ -226,7 +401,11 @@ def _evidence_aware_narrative_target(payload: SrsGenerationRequest) -> int:
     confirmed_brief = json.dumps(payload.confirmed_brief, ensure_ascii=False, default=str)
     approved_evidence = " ".join(hit.content for hit in payload.evidence)
     grounding_words = _word_count(confirmed_brief) + _word_count(approved_evidence)
-    return min(_MIN_EXHAUSTIVE_NARRATIVE_WORDS, max(400, grounding_words * 10))
+    # The floor must prove substantive chapter coverage without rewarding
+    # generic expansion. Twelve governed chapters at the per-section floor are
+    # stronger evidence than an arbitrary 10x paraphrase of the source brief.
+    section_floor = len(_SECTION_SPECS) * _MIN_SUBSTANTIVE_SECTION_WORDS
+    return min(_MIN_EXHAUSTIVE_NARRATIVE_WORDS, max(section_floor, grounding_words * 3))
 
 
 def _evidence_aware_package_target(narrative_target: int) -> int:
@@ -237,15 +416,43 @@ def _evidence_aware_package_target(narrative_target: int) -> int:
     )
 
 
-def _exhaustive_depth_issues(artifact: SrsArtifact) -> list[str]:
+_NON_MATERIAL_IMPLEMENTATION_QUESTION = re.compile(
+    r"(?i)\b(?:vendor|framework|library|package|build tool|deployment tool|hosting provider|cloud provider|"
+    r"code organization|internal naming|repository layout|programming language|database engine)\b"
+)
+_MATERIAL_DECISION_SIGNAL = re.compile(
+    r"(?i)\b(?:scope|include|exclude|actor|role|authority|permission|workflow|state|status|confirm|decline|"
+    r"cancel|reschedul\w*|no[- ]show|entity|ownership|access|retention|deletion|security|privacy|risk|failure|"
+    r"recover\w*|retry|performance|reliability|accessibility|target|threshold|metric|deadline|budget|price|rating|"
+    r"availability|concurrency|idempotency|endpoint|operation|http|api|path|method)\b"
+)
+
+
+def _material_open_questions(values: list[str]) -> list[str]:
+    """Separate blocking product decisions from replaceable implementation choices."""
+    material: list[str] = []
+    for value in values:
+        question = re.sub(r"\s+", " ", value).strip()
+        if not question:
+            continue
+        non_material_implementation = _NON_MATERIAL_IMPLEMENTATION_QUESTION.search(question)
+        if non_material_implementation and not _MATERIAL_DECISION_SIGNAL.search(question):
+            continue
+        material.append(question)
+    return material
+
+
+def _exhaustive_depth_issues(
+    artifact: SrsArtifact, payload: SrsGenerationRequest | None = None
+) -> list[str]:
     """Reject compact or boilerplate-heavy exhaustive outputs before storage."""
     issues: list[str] = []
     types = {item.type for item in artifact.requirements}
     functional_count = sum(item.type == "FUNCTIONAL" for item in artifact.requirements)
-    if len(artifact.requirements) < 12:
-        issues.append("Exhaustive generation requires at least 12 distinct atomic requirements.")
-    if functional_count < 3:
-        issues.append("Exhaustive generation requires at least three distinct functional behaviors.")
+    if len(artifact.requirements) < 20:
+        issues.append("Exhaustive generation requires at least 20 distinct atomic requirements for a complete project brief.")
+    if functional_count < 5:
+        issues.append("Exhaustive generation requires at least five distinct functional behaviors.")
     for label, expected in (
         ("product and UX", {"BUSINESS", "FUNCTIONAL", "UX"}),
         ("data or interface", {"DATA", "API"}),
@@ -254,6 +461,73 @@ def _exhaustive_depth_issues(artifact: SrsArtifact) -> list[str]:
     ):
         if not (types & expected):
             issues.append(f"Exhaustive generation is missing the {label} workstream.")
+
+    if payload is not None:
+        http_context = " ".join([
+            json.dumps(payload.confirmed_brief, ensure_ascii=False, default=str),
+            *(hit.content for hit in payload.evidence),
+        ])
+        confirmed_http_contract = re.search(
+            r"(?i)\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+/[A-Za-z0-9._~!$&'()*+,;=:@%{}/-]+",
+            http_context,
+        )
+        if confirmed_http_contract and not any(
+            requirement.type == "API" and requirement.api_operation is not None
+            for requirement in artifact.requirements
+        ):
+            issues.append("Exhaustive generation omitted the confirmed HTTP operation contract from its API requirements.")
+
+    material_questions = _material_open_questions(artifact.open_questions)
+    if material_questions:
+        issues.append(
+            "Exhaustive generation still has material open discovery questions: "
+            + " | ".join(material_questions[:5])
+            + "."
+        )
+    unresolved_requirements = [item.id for item in artifact.requirements if item.status == "UNRESOLVED"]
+    if unresolved_requirements:
+        issues.append(
+            "Exhaustive generation contains unresolved normative decisions: "
+            + ", ".join(unresolved_requirements[:20])
+            + "."
+        )
+    unresolved_sections = [item.id for item in artifact.narrative_sections if item.source_status == "UNRESOLVED"]
+    if unresolved_sections:
+        issues.append(
+            "Exhaustive generation contains unresolved document chapters: "
+            + ", ".join(unresolved_sections[:20])
+            + "."
+        )
+    unresolved_scenarios = [item.id for item in artifact.quality_scenarios if item.status == "UNRESOLVED"]
+    if unresolved_scenarios:
+        issues.append(
+            "Exhaustive generation contains unresolved quality scenarios: "
+            + ", ".join(unresolved_scenarios[:20])
+            + "."
+        )
+
+    workstreams = [
+        item for item in artifact.generation_manifest.get("workstreams", []) if isinstance(item, dict)
+    ]
+    expected_workstreams = {"product", "data_interfaces", "trust", "quality_operations"}
+    present_workstreams = {str(item.get("id", "")) for item in workstreams}
+    if present_workstreams != expected_workstreams:
+        issues.append("Exhaustive generation did not preserve truthful provenance for all four specialist workstreams.")
+    for item in workstreams:
+        identifier = str(item.get("id", "unknown"))
+        if item.get("validation_status") != "PASSED":
+            issues.append(f"Exhaustive workstream {identifier} did not pass per-workstream validation.")
+        if int(item.get("raw_requirement_count", 0) or 0) < 5:
+            issues.append(f"Exhaustive workstream {identifier} returned fewer than five applicable atomic requirements.")
+        if int(item.get("accepted_requirement_count", 0) or 0) < 1:
+            issues.append(f"Exhaustive workstream {identifier} contributed no semantically unique requirement.")
+        requested_model = str(item.get("requested_model", "")).strip()
+        actual_model = str(item.get("actual_model", "")).strip()
+        if requested_model and actual_model and requested_model != actual_model:
+            issues.append(f"Exhaustive workstream {identifier} silently changed models from {requested_model} to {actual_model}.")
+
+    if payload is not None:
+        issues.extend(_missing_discovery_issues(payload.confirmed_brief))
 
     provenance = artifact.generation_manifest.get("long_form_provenance", {})
     authored_ids = {
@@ -292,6 +566,78 @@ def _exhaustive_depth_issues(artifact: SrsArtifact) -> list[str]:
     return issues
 
 
+def _missing_discovery_issues(brief: dict[str, Any]) -> list[str]:
+    """Name focused decisions that must exist before exhaustive generation can pass."""
+    decisions = (
+        ("scope", ("scope", "inclusions", "included"), "Confirm the first-release inclusions and end-to-end customer outcome."),
+        ("exclusions", ("exclusions", "outOfScope", "out_of_scope"), "Confirm explicit first-release exclusions."),
+        ("users", ("users", "actors", "stakeholders"), "Confirm named actors and their authority boundaries."),
+        ("workflows", ("workflows", "workflow"), "Confirm workflow triggers, states, success, exceptions, and recovery."),
+        ("entities", ("entities", "data", "records"), "Confirm domain entities, ownership, access, and lifecycle."),
+        ("business_rules", ("businessRules", "business_rules"), "Confirm business-rule conditions, decisions, deadlines, and expiration behavior."),
+        ("risks", ("risks",), "Confirm material failure events, impact, detection, owner, and recovery."),
+        ("quality", ("qualityTargets", "quality_targets"), "Confirm measurable reliability, performance, and accessibility targets."),
+        ("constraints", ("constraints",), "Confirm exact platform, schedule, budget, and scope constraints."),
+        ("metrics", ("metrics", "successMetrics", "success_metrics"), "Confirm metric numerator, denominator, target, and review window."),
+    )
+    issues: list[str] = []
+    for kind, keys, question in decisions:
+        value = _brief_value(brief, *keys)
+        if not value or not _decision_is_complete(kind, value):
+            issues.append("Missing discovery decision: " + question)
+    return issues
+
+
+def _looks_like_incomplete_decision(value: str) -> bool:
+    normalized = re.sub(r"\s+", " ", value).strip().casefold()
+    vague_values = {
+        "customer booking first",
+        "access only while needed",
+        "detect quickly and recover",
+        "platform or technology is fixed",
+        "operational owner has final authority",
+        "request-to-confirmation time",
+        "cleaner acceptance has a deadline",
+        "customers request an appointment",
+        "fast and reliable experience",
+    }
+    return len(normalized.split()) < 4 or normalized in vague_values
+
+
+def _decision_is_complete(kind: str, value: str) -> bool:
+    """Apply a small, evidence-facing completeness check to each decision."""
+    normalized = re.sub(r"\s+", " ", value).strip().casefold()
+    if _looks_like_incomplete_decision(normalized):
+        return False
+    minimum_words = {
+        "scope": 8,
+        "exclusions": 4,
+        "users": 6,
+        "workflows": 12,
+        "entities": 8,
+        "business_rules": 8,
+        "risks": 10,
+        "quality": 8,
+        "constraints": 8,
+        "metrics": 10,
+    }[kind]
+    if len(re.findall(r"[a-z0-9]+", normalized)) < minimum_words:
+        return False
+    detail_patterns = {
+        "scope": r"\b(first release|release one|in scope|covers?|includes?)\b",
+        "exclusions": r"\b(exclude(?:d|s)?|out of scope|not included|deferred?|without|no)\b",
+        "users": r"\b(can|may|owns?|authority|submit(?:s)?|review(?:s)?|book(?:s)?|manage(?:s)?)\b",
+        "workflows": r"\b(if|when|then|reject(?:s|ed)?|return(?:s|ed)?|fail(?:s|ed|ure)?|conflict|cancel(?:s|led)?|expire(?:s|d)?|retry|recover(?:y|s|ed)?)\b",
+        "entities": r"\b(owns?|access|retain(?:s|ed)?|delete(?:s|d)?|status|lifecycle|created?|updated?)\b",
+        "business_rules": r"\b(only|cannot|must|within|deadline|expire(?:s|d)?|before|after|when|if)\b",
+        "risks": r"\b(impact|detect(?:s|ed|ion)?|recover(?:y|s|ed)?|prevent(?:s|ed)?|loss|fail(?:s|ed|ure)?|conflict|owner)\b",
+        "quality": r"(?:\b(?:measure(?:d|ment)?|percentile|seconds?|minutes?|keyboard|wcag|availability|rate)\b|\d)",
+        "constraints": r"\b(web|mobile|platform|technology|deadline|schedule|budget|release|fixed|outside)\b",
+        "metrics": r"\b(numerator|denominator|target|window|percentage|percentile|median|rate|daily|weekly|monthly|quarterly|month|week)\b",
+    }
+    return re.search(detail_patterns[kind], normalized) is not None
+
+
 def _normalize_shall_statements(artifact: SrsArtifact) -> SrsArtifact:
     """Repair only the normative wording required by the governed schema.
 
@@ -312,6 +658,26 @@ def _normalize_shall_statements(artifact: SrsArtifact) -> SrsArtifact:
             statement = f"The system shall satisfy this constraint: {statement}"
         requirements.append(requirement.model_copy(update={"statement": statement}))
     return artifact.model_copy(update={"requirements": requirements})
+
+
+def _normalize_adjacent_duplicate_words(artifact: SrsArtifact) -> SrsArtifact:
+    """Remove mechanical adjacent-word duplication without changing facts."""
+    pattern = re.compile(r"(?i)\b([a-z][a-z'-]{1,})\b(?:\s|[\u00a0])+\1\b")
+
+    def normalize(value: Any) -> Any:
+        if isinstance(value, str):
+            previous = None
+            while value != previous:
+                previous = value
+                value = pattern.sub(r"\1", value)
+            return value
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if isinstance(value, dict):
+            return {key: normalize(item) for key, item in value.items()}
+        return value
+
+    return SrsArtifact.model_validate(normalize(artifact.model_dump(mode="json")))
 
 
 def _parse_provider_json(output: str) -> Any:
@@ -344,6 +710,66 @@ def _parse_provider_json(output: str) -> Any:
         return parsed
 
 
+def _adjacent_duplicate_word(value: str) -> str | None:
+    match = re.search(r"(?i)\b([a-z][a-z'-]{1,})\b(?:\s|[\u00a0])+\1\b", value)
+    return match.group(1) if match else None
+
+
+def _artifact_strings(value: Any, path: str = "artifact") -> list[tuple[str, str]]:
+    if isinstance(value, dict):
+        return [
+            item
+            for key, nested in value.items()
+            for item in _artifact_strings(nested, f"{path}.{key}" if path else str(key))
+        ]
+    if isinstance(value, list):
+        return [
+            item
+            for index, nested in enumerate(value)
+            for item in _artifact_strings(nested, f"{path}.{index}")
+        ]
+    return [(path.removeprefix("artifact."), value)] if isinstance(value, str) else []
+
+
+_GENERIC_DOMAIN_TERMS = {
+    "application", "authorized user", "end user", "platform", "project owner", "service", "system", "user",
+}
+_DOMAIN_STOPWORDS = {
+    "a", "an", "and", "applicable", "authorized", "confirmed", "for", "of", "or", "record", "records",
+    "application", "platform", "record", "records", "selected", "service", "system", "the", "to", "user", "users",
+}
+
+
+def _is_grounded_domain_term(term: str, grounding_text: str) -> bool:
+    camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", term)
+    normalized = re.sub(r"[^a-z0-9]+", " ", camel_split.casefold()).strip()
+    if not normalized or normalized in _GENERIC_DOMAIN_TERMS or normalized in grounding_text:
+        return True
+    tokens = [token for token in normalized.split() if token not in _DOMAIN_STOPWORDS and len(token) >= 3]
+    if not tokens:
+        return True
+    grounding_tokens = set(re.findall(r"[a-z0-9]+", grounding_text))
+    for token in tokens:
+        variants = {token}
+        if token.endswith("ies") and len(token) > 4:
+            variants.add(token[:-3] + "y")
+        if token.endswith("s") and len(token) > 3:
+            variants.add(token[:-1])
+        if not any(variant in grounding_tokens for variant in variants):
+            return False
+    return True
+
+
+def _capitalized_domain_terms(statement: str) -> list[str]:
+    action = re.split(r"(?i)\bshall\b", statement, maxsplit=1)[-1]
+    allowed = {"API", "HTTP", "ID", "MUST", "PII", "SHALL", "UI", "URL"}
+    return [
+        match.group(0)
+        for match in re.finditer(r"\b[A-Z][A-Za-z0-9_-]{2,}\b", action)
+        if match.group(0) not in allowed
+    ]
+
+
 def validate_srs(
     artifact: SrsArtifact, evidence: list[RetrievalHit], confirmed_brief: dict[str, Any] | None = None
 ) -> SrsValidation:
@@ -359,7 +785,13 @@ def validate_srs(
     supported_numbers = " ".join(
         [json.dumps(confirmed_brief or {}, ensure_ascii=False), *(hit.content for hit in evidence)]
     )
+    grounding_text = " ".join(
+        [json.dumps(confirmed_brief or {}, ensure_ascii=False), *(hit.content for hit in evidence)]
+    ).casefold()
     cited = 0
+    api_operation_ids: set[str] = set()
+    api_routes: set[tuple[str, str]] = set()
+    normalized_grounding_text = re.sub(r"\s+", " ", grounding_text)
     for requirement in artifact.requirements:
         if requirement.id in identifiers:
             issues.append(f"Duplicate requirement ID: {requirement.id}.")
@@ -376,10 +808,62 @@ def validate_srs(
         # Conjunctions frequently join a single data set or condition and are
         # not, by themselves, evidence of a compound requirement. Multiple
         # normative "shall" clauses are the deterministic atomicity failure.
-        if len(re.findall(r"\bshall\b", requirement.statement, re.IGNORECASE)) > 1:
+        shall_count = len(re.findall(r"\bshall\b", requirement.statement, re.IGNORECASE))
+        if shall_count > 1:
             issues.append(f"{requirement.id} contains multiple normative obligations.")
+        stripped_statement = requirement.statement.strip()
+        has_internal_sentence_end = bool(re.search(r"[.!?]\s+\S", stripped_statement[:-1]))
+        if shall_count != 1 or has_internal_sentence_end or not re.match(
+            r"(?is)^The\s+.+?\s+shall\s+(?!shall\b)\S.+[.!?]$",
+            stripped_statement,
+        ):
+            issues.append(f"{requirement.id} does not use a complete single-sentence SHALL grammar.")
+        duplicate = _adjacent_duplicate_word(requirement.statement)
+        if duplicate:
+            issues.append(f"{requirement.id} repeats the adjacent word '{duplicate}'.")
         if not all(item.strip() for item in requirement.acceptance_criteria):
             issues.append(f"{requirement.id} has an empty acceptance criterion.")
+        for field, terms in (("actor", requirement.actors), ("data term", requirement.data_involved)):
+            for term in terms:
+                if not _is_grounded_domain_term(term, grounding_text):
+                    issues.append(f"{requirement.id} uses unsupported {field}: {term}.")
+        for term in _capitalized_domain_terms(requirement.statement):
+            if not _is_grounded_domain_term(term, grounding_text):
+                issues.append(f"{requirement.id} uses unsupported domain term: {term}.")
+        if requirement.type == "API":
+            operation = requirement.api_operation
+            if operation is None:
+                issues.append(f"{requirement.id} is an API requirement without a confirmed HTTP operation contract.")
+            else:
+                operation_id = operation.operation_id.casefold()
+                route = (operation.method, operation.path.casefold())
+                if operation_id in api_operation_ids:
+                    issues.append(f"{requirement.id} duplicates API operation ID {operation.operation_id}.")
+                api_operation_ids.add(operation_id)
+                if route in api_routes:
+                    issues.append(f"{requirement.id} duplicates API route {operation.method} {operation.path}.")
+                api_routes.add(route)
+                signature = f"{operation.method} {operation.path}".casefold()
+                if signature not in normalized_grounding_text or operation_id not in normalized_grounding_text:
+                    issues.append(
+                        f"{requirement.id} uses an HTTP operation contract not confirmed by the project evidence."
+                    )
+                local_contract_text = re.sub(
+                    r"\s+",
+                    " ",
+                    " ".join((
+                        requirement.title,
+                        requirement.statement,
+                        requirement.source_detail,
+                        requirement.trigger,
+                    )).casefold(),
+                )
+                if signature not in local_contract_text and operation_id not in local_contract_text:
+                    issues.append(
+                        f"{requirement.id} HTTP operation contract does not match its requirement-local source detail."
+                    )
+        elif requirement.api_operation is not None:
+            issues.append(f"{requirement.id} attaches an HTTP operation contract to non-API type {requirement.type}.")
         vague = re.search(r"(?i)\b(fast|secure|user[- ]friendly|scalable|highly available|responsive|robust)\b", requirement.statement)
         target_pattern = r"\b\d+(?:\.\d+)?\s*(?:%|ms|s|seconds?|minutes?|hours?|requests?|users?|mb|gb|tb)(?=\s|[.,;:)]|$)"
         measurable = bool(re.search(target_pattern, requirement.statement, re.IGNORECASE))
@@ -401,6 +885,26 @@ def validate_srs(
     text = json.dumps(artifact.model_dump(mode="json"), ensure_ascii=False, default=str)
     if _SENSITIVE.search(text):
         issues.append("The draft appears to disclose sensitive credential-like material.")
+    for location, value in _artifact_strings(artifact.model_dump(mode="json")):
+        duplicate = _adjacent_duplicate_word(value)
+        if duplicate and not re.fullmatch(r"requirements\.\d+\.statement", location):
+            issues.append(f"{location} repeats the adjacent word '{duplicate}'.")
+            if len(issues) >= 100:
+                break
+    if confirmed_brief:
+        confirmed_inclusions = _as_list(_brief_value(confirmed_brief, "inclusions", "included", "scope"))
+        confirmed_exclusions = _as_list(_brief_value(
+            confirmed_brief, "exclusions", "outOfScope", "out_of_scope", "avoid"
+        ))
+        for label, confirmed_values, compiled_values in (
+            ("inclusion", confirmed_inclusions, artifact.inclusions),
+            ("exclusion", confirmed_exclusions, artifact.exclusions),
+        ):
+            normalized_compiled = {re.sub(r"\s+", " ", item).strip().casefold() for item in compiled_values}
+            for value in confirmed_values:
+                normalized = re.sub(r"\s+", " ", value).strip().casefold()
+                if normalized and normalized not in normalized_compiled:
+                    issues.append(f"Confirmed {label} was not preserved: {value}.")
     coverage = round((cited / len(artifact.requirements)) * 100, 2) if artifact.requirements else 0.0
     accepted = sum(bool(item.acceptance_criteria) for item in artifact.requirements)
     acceptance_coverage = round((accepted / len(artifact.requirements)) * 100, 2) if artifact.requirements else 0.0
@@ -418,7 +922,7 @@ def validate_srs(
     quality_score = round(sum(completeness_components) / len(completeness_components) * 100, 2)
     return SrsValidation(
         valid=not issues,
-        issues=issues,
+        issues=issues[:100],
         citation_coverage=coverage,
         requirement_count=len(artifact.requirements),
         section_count=len(artifact.narrative_sections),
@@ -436,15 +940,17 @@ def _compile_master_srs(artifact: SrsArtifact, payload: SrsGenerationRequest) ->
     so output depth does not depend on one model remembering every chapter.
     """
     brief = payload.confirmed_brief
-    users = _split_named_items(_brief_value(brief, "users", "actors", "stakeholders"), limit=20)
-    entities = _split_named_items(_brief_value(brief, "entities", "data", "records"), limit=30)
-    integrations = _split_named_items(_brief_value(brief, "integrations"), limit=20)
+    users = _split_named_items(_brief_value(brief, "users", "actors", "stakeholders"), limit=20, kind="actor")
+    entities = _split_named_items(_brief_value(brief, "entities", "data", "records"), limit=30, kind="entity")
+    integrations = _split_named_items(_brief_value(brief, "integrations"), limit=20, kind="integration")
     problem = _brief_value(brief, "problem") or payload.project.description
-    scope = _brief_value(brief, "scope") or artifact.scope
+    confirmed_scope = _brief_value(brief, "scope")
+    scope = confirmed_scope or artifact.scope
     workflows_text = _brief_value(brief, "workflows", "workflow")
     quality_text = _brief_value(brief, "qualityTargets", "quality_targets")
     risks_text = _brief_value(brief, "risks")
     metrics = _brief_value(brief, "metrics", "successMetrics", "success_metrics")
+    entity_relationships = _confirmed_entity_relationships(brief, entities)
 
     requirements: list[SrsRequirement] = []
     for requirement in artifact.requirements:
@@ -454,6 +960,11 @@ def _compile_master_srs(artifact: SrsArtifact, payload: SrsGenerationRequest) ->
             "status": "ASSUMED" if requirement.source_kind == "ASSUMPTION" else requirement.status,
             "actors": requirement.actors or users,
             "trigger": requirement.trigger if requirement.trigger != "Confirmed workflow event" else "The applicable confirmed workflow reaches this requirement.",
+            "success_result": (
+                requirement.acceptance_criteria[0]
+                if requirement.success_result == "The stated acceptance outcome is observable."
+                else requirement.success_result
+            ),
             "failure_behavior": requirement.failure_behavior if requirement.failure_behavior != "Failure behavior requires review." else "Failure handling is unresolved unless explicitly stated in the confirmed workflow or acceptance criteria.",
             "data_involved": requirement.data_involved or [entity for entity in entities if entity.lower() in requirement.statement.lower()],
         }))
@@ -465,10 +976,50 @@ def _compile_master_srs(artifact: SrsArtifact, payload: SrsGenerationRequest) ->
     workflows = artifact.workflows or _compiled_workflows(workflows_text, users, requirements)
     quality_scenarios = artifact.quality_scenarios or _compiled_quality_scenarios(quality_text, requirements)
     risk_register = artifact.risks or _compiled_risks(risks_text)
-    decisions = artifact.decisions or _compiled_decisions(brief, artifact.open_questions)
+    confirmed_open_questions = _as_list(_brief_value(brief, "openQuestions", "open_questions"))
+    if payload.generation_mode == "EXHAUSTIVE":
+        # Exhaustive generation is entered only after the discovery readiness
+        # gate. The model may not reopen product decisions that are absent from
+        # the confirmed brief; doing so would turn speculation into a blocker.
+        open_questions = _merge_confirmed_text([], confirmed_open_questions, limit=30)
+        confirmed_normalized = {
+            re.sub(r"\s+", " ", item).strip().casefold() for item in confirmed_open_questions
+        }
+        discarded_unconfirmed_open_questions = [
+            item for item in artifact.open_questions
+            if re.sub(r"\s+", " ", item).strip().casefold() not in confirmed_normalized
+        ]
+    else:
+        open_questions = _merge_confirmed_text(
+            artifact.open_questions,
+            confirmed_open_questions,
+            limit=30,
+        )
+        discarded_unconfirmed_open_questions = []
+    decisions = artifact.decisions or _compiled_decisions(brief, open_questions)
     standards = artifact.standards_applied or _compiled_standards(payload)
-    diagrams = artifact.diagrams or _compiled_diagrams(payload, users, entities, integrations, workflows_text)
-    objectives = artifact.objectives or [value for value in (problem, metrics) if value]
+    diagrams = artifact.diagrams or _compiled_diagrams(
+        payload, users, entities, integrations, workflows_text, entity_relationships,
+    )
+    objectives = _merge_confirmed_text(artifact.objectives, [value for value in (problem, metrics) if value], limit=30)
+    stakeholders = _merge_confirmed_text(artifact.stakeholders, users, limit=40)
+    inclusions = _merge_confirmed_text(
+        artifact.inclusions,
+        _as_list(_brief_value(brief, "inclusions", "included", "scope")),
+        limit=100,
+        confirmed_first=True,
+    )
+    exclusions = _merge_confirmed_text(
+        artifact.exclusions,
+        _as_list(_brief_value(brief, "exclusions", "outOfScope", "out_of_scope", "avoid")),
+        limit=100,
+        confirmed_first=True,
+    )
+    assumptions = _merge_confirmed_text(
+        artifact.assumptions,
+        _as_list(_brief_value(brief, "assumptions")),
+        limit=30,
+    )
     terminology = artifact.definitions or _compiled_terminology(users, entities, integrations)
     source_registry = artifact.source_registry or _compiled_sources(payload.evidence)
     executive_summary = artifact.executive_summary
@@ -478,18 +1029,43 @@ def _compile_master_srs(artifact: SrsArtifact, payload: SrsGenerationRequest) ->
             f"The first-release boundary is: {_excerpt(scope, 1_000)}. "
             "This specification separates confirmed facts, recommendations, assumptions, unresolved decisions, and exclusions; it does not claim unverified compliance."
         )
+    generation_manifest = _generation_manifest(payload)
+    generation_manifest.update(artifact.generation_manifest)
+    generation_manifest["mode"] = payload.generation_mode
+    generation_manifest["workstream_count"] = len(generation_manifest.get("workstreams", [])) or generation_manifest["workstream_count"]
+    generation_manifest["discarded_unconfirmed_open_questions"] = discarded_unconfirmed_open_questions
+    generation_manifest["open_question_classification"] = [
+        {
+            "question": question,
+            "material": bool(_material_open_questions([question])),
+            "classification": (
+                "BLOCKING_DISCOVERY"
+                if _material_open_questions([question])
+                else "NON_BLOCKING_IMPLEMENTATION_SELECTION"
+            ),
+        }
+        for question in open_questions
+    ]
     return artifact.model_copy(update={
         "schema_version": "2.0",
         "document_control": artifact.document_control or {
             "status": "Needs stakeholder review",
-            "detail_level": "Exhaustive",
+            "detail_level": payload.generation_mode.title(),
             "requirements_profile": payload.profile.name,
             "generation_method": "Governed section compiler",
         },
-        "generation_manifest": artifact.generation_manifest or _generation_manifest(payload),
+        "generation_manifest": generation_manifest,
         "executive_summary": executive_summary,
+        "scope": (
+            f"This SRS covers the confirmed first-release scope: {_excerpt(confirmed_scope, 5_800)}."
+            if confirmed_scope else artifact.scope
+        ),
         "objectives": objectives,
-        "stakeholders": artifact.stakeholders or users,
+        "stakeholders": stakeholders,
+        "inclusions": inclusions,
+        "exclusions": exclusions,
+        "assumptions": assumptions,
+        "open_questions": open_questions,
         "definitions": terminology,
         "source_registry": source_registry,
         "narrative_sections": sections,
@@ -664,7 +1240,12 @@ def _compiled_standards(payload: SrsGenerationRequest) -> list[SrsRegisterItem]:
 
 
 def _compiled_diagrams(
-    payload: SrsGenerationRequest, users: list[str], entities: list[str], integrations: list[str], workflow: str,
+    payload: SrsGenerationRequest,
+    users: list[str],
+    entities: list[str],
+    integrations: list[str],
+    workflow: str,
+    entity_relationships: list[tuple[str, str, str, str]] | None = None,
 ) -> list[SrsDiagram]:
     system_id = _diagram_id(payload.project.name, "SYSTEM")
     context_lines = ["flowchart LR", f'  {system_id}["{_diagram_text(payload.project.name)}"]']
@@ -690,6 +1271,11 @@ def _compiled_diagrams(
     erd_lines = ["erDiagram"]
     for entity in entities[:20]:
         erd_lines.extend((f"  {_diagram_id(entity, 'ENTITY')} {{", "    uuid id PK", "  }"))
+    for from_entity, to_entity, connector, label in entity_relationships or []:
+        erd_lines.append(
+            f"  {_diagram_id(from_entity, 'ENTITY')} {connector} "
+            f"{_diagram_id(to_entity, 'ENTITY')} : {_diagram_text(label, 60)}"
+        )
     if len(erd_lines) == 1:
         erd_lines.extend(("  UNRESOLVED_ENTITY {", "    uuid id PK", "  }"))
     return [
@@ -698,25 +1284,94 @@ def _compiled_diagrams(
         SrsDiagram(id="DGM-002", type="WORKFLOW", title="Primary workflow", notation="MERMAID",
                    source="\n".join(workflow_lines), rationale="Makes the confirmed sequence and unresolved gaps reviewable.", status=workflow_status),
         SrsDiagram(id="DGM-003", type="ERD", title="Conceptual data model", notation="MERMAID",
-                   source="\n".join(erd_lines), rationale="Lists confirmed entities without inventing unsupported relationships.", status="DERIVED" if entities else "UNRESOLVED"),
+                   source="\n".join(erd_lines), rationale=(
+                       "Shows only entities and cardinalities explicitly confirmed in the project brief."
+                       if entity_relationships else
+                       "Lists confirmed entities without inventing unsupported relationships."
+                   ), status="CONFIRMED" if entity_relationships else ("DERIVED" if entities else "UNRESOLVED")),
     ]
+
+
+def _confirmed_entity_relationships(
+    brief: dict[str, Any],
+    entities: list[str],
+) -> list[tuple[str, str, str, str]]:
+    """Read only explicit, structured entity cardinalities from the brief."""
+    raw = brief.get("entityRelationships", brief.get("entity_relationships", []))
+    if not isinstance(raw, list):
+        return []
+    entity_names = {item.casefold(): item for item in entities}
+    connectors = {
+        "ONE_TO_ONE": "||--||",
+        "ONE_TO_ZERO_OR_ONE": "||--o|",
+        "ONE_TO_MANY": "||--o{",
+        "ZERO_OR_ONE_TO_MANY": "o|--o{",
+        "MANY_TO_MANY": "}o--o{",
+    }
+    relationships: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in raw[:40]:
+        if not isinstance(item, dict):
+            continue
+        from_entity = entity_names.get(str(item.get("from", "")).strip().casefold())
+        to_entity = entity_names.get(str(item.get("to", "")).strip().casefold())
+        cardinality = str(item.get("cardinality", "")).strip().upper()
+        label = re.sub(r"\s+", " ", str(item.get("label", "")).strip())
+        if (
+            from_entity is None
+            or to_entity is None
+            or from_entity == to_entity
+            or cardinality not in connectors
+            or not (2 <= len(label) <= 60)
+        ):
+            continue
+        key = (from_entity.casefold(), to_entity.casefold(), label.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        relationships.append((from_entity, to_entity, connectors[cardinality], label))
+    return relationships
 
 
 def _split_items(value: str, *, limit: int) -> list[str]:
     return [item.strip(" -•\t.") for item in re.split(r"(?:\r?\n|;|•)+", value) if item.strip(" -•\t.")][:limit]
 
 
-def _split_named_items(value: str, *, limit: int) -> list[str]:
+def _split_named_items(value: str, *, limit: int, kind: str = "item") -> list[str]:
     values: list[str] = []
     for item in re.split(r"(?:\r?\n|;|,|•)+", value):
         candidate = item.strip(" -•\t.")
+        normalized = candidate.casefold()
+        policy_phrase = bool(re.search(
+            r"(?i)\b(?:only|while|when|until|unless|must|shall|should|needed|controls?|allows?|prevents?|"
+            r"expires?|recovers?|acceptance|deadline|authority|decision|threshold)\b",
+            candidate,
+        ))
         if (
             1 < len(candidate) <= 120
             and len(candidate.split()) <= 10
-            and candidate.casefold() not in {"null", "none", "n/a", "unknown", "undefined"}
+            and normalized not in {"null", "none", "n/a", "unknown", "undefined"}
+            and (kind != "entity" or not policy_phrase)
         ):
             values.append(candidate)
     return list(dict.fromkeys(values))[:limit]
+
+
+def _merge_confirmed_text(
+    existing: list[str], confirmed: list[str], *, limit: int, confirmed_first: bool = False
+) -> list[str]:
+    """Append canonical brief facts without losing useful provider analysis."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    values = (*confirmed, *existing) if confirmed_first else (*existing, *confirmed)
+    for value in values:
+        normalized = re.sub(r"\s+", " ", value).strip()
+        key = normalized.casefold()
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        merged.append(normalized)
+    return merged[:limit]
 
 
 def _requirement_title(statement: str) -> str:
@@ -739,17 +1394,35 @@ def _diagram_text(value: str, limit: int = 80) -> str:
     return re.sub(r"[\"<>]", "'", re.sub(r"\s+", " ", value)).strip()[:limit]
 
 
-def _check_evidence(evidence: list[RetrievalHit]) -> None:
-    if not evidence:
+def _check_srs_input(payload: SrsGenerationRequest) -> None:
+    """Keep untrusted project data out of the provider prompt when unsafe.
+
+    Discovery answers are owner-confirmed facts, but remain untrusted text. A
+    direct internal caller must not be able to bypass the same injection and
+    credential boundary applied to retrieval evidence.
+    """
+    if not payload.evidence:
         raise AiServiceError(
             ErrorCode.INSUFFICIENT_EVIDENCE,
             "Approved project evidence is required before an SRS can be generated.",
             status_code=422,
         )
-    if any(_INJECTION.search(hit.content) for hit in evidence):
+    untrusted_values = [
+        payload.project.name,
+        payload.project.description or "",
+        json.dumps(payload.confirmed_brief, ensure_ascii=False, default=str),
+        *(hit.content for hit in payload.evidence),
+    ]
+    if any(_INJECTION.search(value) for value in untrusted_values):
         raise AiServiceError(
             ErrorCode.CONTENT_SAFETY_BLOCKED,
-            "An evidence source contains an unsafe instruction override and cannot be used.",
+            "Project input contains an unsafe instruction override and cannot be used.",
+            status_code=422,
+        )
+    if any(_SENSITIVE.search(value) for value in untrusted_values):
+        raise AiServiceError(
+            ErrorCode.CONTENT_SAFETY_BLOCKED,
+            "Project input appears to include a credential and cannot be sent to the generation provider.",
             status_code=422,
         )
 
@@ -1028,7 +1701,10 @@ def _excerpt(value: str, limit: int = 900) -> str:
     # User prose can itself contain normative language; it is evidence, not a
     # second system obligation in the generated requirement sentence.
     normalized = re.sub(r"\bshall\b", "is expected to", normalized, flags=re.IGNORECASE)
-    return normalized[:limit].rstrip(" ,;:")
+    if len(normalized) <= limit:
+        return normalized
+    boundary = normalized[:limit].rsplit(" ", 1)[0].rstrip(" ,;:")
+    return f"{boundary or normalized[:limit].rstrip(' ,;:')}..."
 
 
 def _first_sentence(value: str, limit: int = 360) -> str:
