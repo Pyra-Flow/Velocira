@@ -201,8 +201,13 @@ class DocumentationPackageIntegrationTest {
                 assertThat(margins.getHeader()).isEqualTo(BigInteger.valueOf(708));
                 assertThat(margins.getFooter()).isEqualTo(BigInteger.valueOf(708));
                 assertThat(docxDocument.getParagraphs().stream().filter(paragraph -> "System requirements".equals(paragraph.getText())).count()).isEqualTo(1);
+                int expectedBodySize = switch (style.layout()) {
+                    case COMPACT -> 10;
+                    case STANDARD -> 11;
+                    case PRESENTATION -> 12;
+                };
                 assertThat(docxDocument.getParagraphs().stream().filter(paragraph -> paragraph.getText().contains("This SRS is"))
-                        .flatMap(paragraph -> paragraph.getRuns().stream()).mapToInt(run -> run.getFontSize()).filter(size -> size == 11).count()).isPositive();
+                        .flatMap(paragraph -> paragraph.getRuns().stream()).mapToInt(run -> run.getFontSize()).filter(size -> size == expectedBodySize).count()).isPositive();
             }
         }
 
