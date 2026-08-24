@@ -168,6 +168,28 @@ def test_srs_endpoint_returns_validated_cited_requirements() -> None:
     assert body["artifact"]["requirements"][0]["citations"][0]["chunk_id"] == ids["chunk_id"]
 
 
+def test_srs_generation_enforces_the_same_request_size_limit() -> None:
+    ids = _retrieval_ids()
+    client = TestClient(create_app(settings=Settings(environment="test", max_input_bytes=32)))
+    response = client.post(
+        "/v1/srs/generate",
+        json={
+            "project": {
+                "id": ids["project_id"], "name": "Bounded SRS", "description": "A confirmed project.", "type": "WEB_APPLICATION",
+            },
+            "confirmed_brief": {"problem": "Reduce processing delays."},
+            "profile": {"key": "STARTER", "name": "Starter", "controls": ["Trace requirements."]},
+            "evidence": [{
+                "source_id": ids["source_id"], "chunk_id": ids["chunk_id"], "source_title": "Confirmed workflow",
+                "content": "A user submits a request and receives a decision.", "score": 0.94,
+            }],
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "invalid_request"
+
+
 class _CrashingProvider:
     name = "crashing-test-provider"
     model = "crashing-test-model"

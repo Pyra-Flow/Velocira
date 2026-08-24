@@ -122,7 +122,9 @@ def test_discovery_planner_returns_one_typed_high_value_question() -> None:
     assert body["planner"] == "deterministic-discovery-strategist-v3"
     assert body["model"] == "deterministic"
     assert body["next_question"]["category"] == "USERS"
-    assert body["next_question"]["question_text"].startswith("Who starts the core process")
+    assert body["next_question"]["question_text"].startswith(
+        "For the described project used to test the job path"
+    )
     assert body["next_question"]["options"][-1]["key"] == "not-decided"
     assert body["candidate_scores"]
     assert body["selection_reason"]
@@ -144,16 +146,16 @@ def test_discovery_provider_only_receives_the_top_ranked_candidate() -> None:
                 output={
                     "key": candidate["key"],
                     "category": candidate["category"],
-                    "question_text": "For the confirmed support-delay outcome, which roles start, resolve, approve, or monitor the work?",
+                    "question_text": "For the test job path with confirmed support delays, which roles start, resolve, approve, or monitor the work?",
                     "why_we_ask": "The answer defines responsibility, permissions, notifications, and exception ownership for the core workflow.",
                     "selection_reason": "This is the top-ranked unresolved decision.",
                     "missing_requirement": "Named actors and authority boundaries.",
                     "source_context": ["project:description", "answer:problem"],
                     "assumptions_to_validate": [],
                     "options": [
-                        {"key": "operator", "label": "Operator owns routine work", "description": "Keeps daily handling fast while escalating consequential exceptions."},
-                        {"key": "approver", "label": "Approver owns consequential decisions", "description": "Adds control but requires deadlines and a backup decision path."},
-                        {"key": "state-based", "label": "Authority changes by workflow state", "description": "Supports hand-offs but requires explicit transition permissions and ownership."},
+                        {"key": "operator", "label": "Job-path operator owns routine support work", "description": "The operator must resolve routine job-path cases and escalate consequential exceptions to the named approver."},
+                        {"key": "approver", "label": "Job-path approver owns consequential decisions", "description": "The approver must resolve consequential job-path exceptions before work may return to routine handling."},
+                        {"key": "state-based", "label": "Job-path authority changes by workflow state", "description": "Each job-path state must name its decision owner before support work may cross a transition."},
                         {"key": "not-decided", "label": "Not decided yet", "description": "Keeps role authority as an explicit unresolved product decision."},
                     ],
                 },
