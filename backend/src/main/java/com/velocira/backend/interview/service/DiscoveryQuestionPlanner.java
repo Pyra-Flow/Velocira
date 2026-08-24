@@ -38,24 +38,23 @@ public class DiscoveryQuestionPlanner {
         Set<String> answeredKeys = answers.stream()
                 .map(InterviewAnswerEntity::getQuestionKey)
                 .collect(java.util.stream.Collectors.toSet());
-        Set<InterviewCategory> answeredCategories = answers.stream()
-                .map(InterviewAnswerEntity::getCategory)
-                .collect(java.util.stream.Collectors.toSet());
-        Set<InterviewCategory> followUpCategories = new java.util.HashSet<>(openQuestions.stream()
+        Set<String> followUpKeys = openQuestions.stream()
                 .filter(OpenQuestionEntity::isMaterial)
                 .filter(question -> !question.getStatus().name().equals("RESOLVED"))
-                .filter(question -> answeredCategories.contains(question.getCategory()))
+                .map(OpenQuestionEntity::getQuestionKey)
+                .filter(key -> key.startsWith("incomplete-"))
+                .map(this::sourceQuestionKey)
+                .collect(java.util.stream.Collectors.toSet());
+        Set<InterviewCategory> contradictionCategories = openQuestions.stream()
+                .filter(OpenQuestionEntity::isMaterial)
+                .filter(question -> !question.getStatus().name().equals("RESOLVED"))
+                .filter(question -> question.getQuestionKey().startsWith("contradiction-"))
                 .map(OpenQuestionEntity::getCategory)
-                .collect(java.util.stream.Collectors.toSet()));
-        answers.stream().filter(answer -> answer.getDisposition().name().equals("ANSWERED"))
-                .filter(answer -> isLowInformation(answer.getAnswerText()) || isExplicitlyUndecided(answer))
-                .map(InterviewAnswerEntity::getCategory)
-                .forEach(followUpCategories::add);
+                .collect(java.util.stream.Collectors.toSet());
         List<DiscoveryQuestionCatalog.QuestionDefinition> candidates = questionCatalog.ordered().stream()
                 .filter(question -> !answeredKeys.contains(question.key())
-                        || followUpCategories.contains(question.category()))
-                .filter(question -> !answeredCategories.contains(question.category())
-                        || followUpCategories.contains(question.category()))
+                        || followUpKeys.contains(question.key())
+                        || contradictionCategories.contains(question.category()))
                 .toList();
         if (candidates.isEmpty()) {
             return null;
@@ -63,9 +62,13 @@ public class DiscoveryQuestionPlanner {
 
         Set<InterviewCategory> required = questionCatalog.requiredCategories(session.getProject(), answers);
         List<HttpDiscoveryPlannerClient.EvidenceContext> evidence = approvedEvidence(session);
+        if (!plannerClient.isEnabled()) {
+            return deterministicPlan(session, answers, openQuestions, evidence, candidates, required);
+        }
         return plannerClient.planQuestion(session.getProject(), answers, openQuestions, evidence, candidates, required)
                 .map(this::toResponse)
-                .orElseGet(() -> deterministicPlan(session, answers, openQuestions, evidence, candidates, required));
+                .orElseThrow(() -> new com.velocira.backend.interview.exceptions.InterviewStateException(
+                        "The discovery model did not return a question; no fallback question was saved."));
     }
 
     private InterviewDtos.QuestionResponse deterministicPlan(
@@ -83,20 +86,15 @@ public class DiscoveryQuestionPlanner {
                 selected, session.getProject(), answers);
         OpenQuestionEntity followUp = openQuestions.stream()
                 .filter(OpenQuestionEntity::isMaterial)
-                .filter(item -> item.getCategory() == selected.category())
                 .filter(item -> !item.getStatus().name().equals("RESOLVED"))
-                .filter(item -> answers.stream().anyMatch(answer -> answer.getCategory() == selected.category()))
+                .filter(item -> item.getCategory() == selected.category())
+                .filter(item -> item.getQuestionKey().startsWith("contradiction-")
+                        || sourceQuestionKey(item.getQuestionKey()).equals(selected.key()))
                 .findFirst().orElse(null);
-        boolean incompleteAnswer = answers.stream().anyMatch(answer -> answer.getCategory() == selected.category()
-                && answer.getDisposition().name().equals("ANSWERED")
-                && (isLowInformation(answer.getAnswerText()) || isExplicitlyUndecided(answer)));
-        if (followUp != null || incompleteAnswer) {
-            String followUpText = followUp != null && followUp.getQuestionKey().startsWith("contradiction-")
-                    ? "The current integration and deployment answers point in different directions; which boundary should govern the first release, and what must change to satisfy it?"
-                    : incompleteFollowUp(selected.category());
+        if (followUp != null) {
             tailored = new DiscoveryQuestionCatalog.QuestionDefinition(
-                    tailored.key(), tailored.category(), followUpText,
-                    "This follow-up resolves a visible gap without treating the earlier incomplete answer as a settled fact.",
+                    tailored.key(), tailored.category(), followUp.getQuestionText(),
+                    followUp.getReason(),
                     tailored.riskLevel(), tailored.required(), tailored.allowsMultiple(), tailored.options());
         }
         List<String> sources = sourceContext(answers, openQuestions, evidence);
@@ -227,22 +225,13 @@ public class DiscoveryQuestionPlanner {
         return List.copyOf(reasons);
     }
 
-    private String incompleteFollowUp(InterviewCategory category) {
-        return switch (category) {
-            case PROBLEM -> "Your earlier answer did not identify one concrete outcome; which delay, error, or harmful result must improve first, and how would you recognize the improvement?";
-            case USERS -> "Your earlier answer did not establish authority; who starts, completes, approves, or overrides the core action, and who only needs visibility?";
-            case SCOPE -> "Your earlier answer did not define a complete first-release slice; which single journey must work end to end, and which nearby capability should wait?";
-            case WORKFLOWS -> "Your earlier answer left the exception path open; after the main action fails or waits too long, who acts next and what should each person see?";
-            case ENTITIES -> "Your earlier answer did not settle record ownership; which system or role owns corrections, access decisions, and deletion for the core record?";
-            case INTEGRATIONS -> "Your earlier answer did not identify an authoritative dependency; which external system, if any, owns the status used by the core workflow?";
-            case QUALITY_GOALS -> "Your earlier answer did not provide a testable target; which failure is least acceptable at launch, and what measurable threshold should govern it?";
-            case CONSTRAINTS -> "Your earlier answer did not identify a fixed boundary; which of launch date, budget, platform, or scope is non-negotiable, and which may move?";
-            case RISKS -> "Your earlier answer did not identify a concrete harm; which credible failure matters most, and who must detect and recover from it?";
-            case BUSINESS_RULES -> "Your earlier answer did not establish an enforceable decision; which approval, limit, or override rule must be consistent, and who owns exceptions?";
-            case METRICS -> "Your earlier answer did not provide a measurable result; which baseline, target, and review period should prove the release worked?";
-            case STAKEHOLDERS -> "Your earlier answer did not identify final authority; who accepts the release and who may block it for operational, security, or compliance risk?";
-            case EXCLUSIONS -> "Your earlier answer did not establish a release boundary; which nearby capability must explicitly wait even if users request it?";
-        };
+    private String sourceQuestionKey(String findingKey) {
+        if (!findingKey.startsWith("incomplete-")) {
+            return findingKey;
+        }
+        String source = findingKey.substring("incomplete-".length());
+        int facet = source.indexOf("-facet-");
+        return facet < 0 ? source : source.substring(0, facet);
     }
 
     private List<HttpDiscoveryPlannerClient.EvidenceContext> approvedEvidence(InterviewSessionEntity session) {

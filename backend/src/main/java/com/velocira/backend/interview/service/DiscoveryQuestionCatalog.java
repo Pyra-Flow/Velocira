@@ -28,6 +28,9 @@ public class DiscoveryQuestionCatalog {
             Map.entry("availability-conflicts", "preventing confirmed booking conflicts"),
             Map.entry("slow-confirmation", "shortening booking confirmation time"),
             Map.entry("missed-follow-up", "preventing missed follow-up"),
+            Map.entry("intake-dropoff", "reducing client intake drop-off"),
+            Map.entry("slow-qualification", "shortening intake review time"),
+            Map.entry("missing-intake-context", "collecting complete client context"),
             Map.entry("handoff-delay", "reducing care hand-off delays"),
             Map.entry("missing-context", "preventing missing care context"),
             Map.entry("unclear-ownership", "making ownership unambiguous"),
@@ -108,44 +111,44 @@ public class DiscoveryQuestionCatalog {
     public DiscoveryQuestionCatalog() {
         ordered = List.of(
                 question("problem", InterviewCategory.PROBLEM,
-                        "What problem are you trying to solve, and why does it matter now?",
-                        "This anchors the goal and prevents features from being mistaken for the problem.", RiskLevel.HIGH, true),
+                        "What is the most important problem to solve first?",
+                        "A clear first problem keeps the requirements focused on an outcome instead of a feature list.", RiskLevel.HIGH, true),
                 question("users", InterviewCategory.USERS,
-                        "Who will use this, and what does each main user need to accomplish?",
-                        "User groups define actors, permissions, and the workflows we need to document.", RiskLevel.HIGH, true),
+                        "Who needs this most, and what do they need to do?",
+                        "The main users define the roles, permissions, and journeys the requirements must cover.", RiskLevel.HIGH, true),
                 question("stakeholders", InterviewCategory.STAKEHOLDERS,
-                        "Who can make decisions, approve work, or be affected by the system?",
-                        "Stakeholders reveal approvals, ownership, and conflicting priorities early.", RiskLevel.MEDIUM, false),
+                        "Who has final approval when priorities conflict?",
+                        "A named decision owner prevents approval and escalation rules from staying ambiguous.", RiskLevel.MEDIUM, false),
                 question("scope", InterviewCategory.SCOPE,
-                        "What must the first release do? Describe the smallest successful outcome.",
-                        "A clear scope keeps requirements testable and limits accidental expansion.", RiskLevel.HIGH, true),
+                        "What is the smallest complete outcome the first release must deliver?",
+                        "A complete first outcome keeps requirements testable and prevents accidental scope growth.", RiskLevel.HIGH, true),
                 question("exclusions", InterviewCategory.EXCLUSIONS,
-                        "What is explicitly out of scope for this release?",
-                        "Explicit exclusions protect the team from assumptions and scope creep.", RiskLevel.HIGH, true),
+                        "What should the first release deliberately leave out?",
+                        "A visible boundary protects the team from assumptions and scope creep.", RiskLevel.HIGH, true),
                 question("workflows", InterviewCategory.WORKFLOWS,
-                        "Walk me through the most important user journey from start to finish.",
-                        "Core workflows become the backbone for requirements, tests, and UX flows.", RiskLevel.HIGH, true),
+                        "What should happen from the user’s first action to a successful result?",
+                        "The core journey becomes the backbone for requirements, recovery paths, and tests.", RiskLevel.HIGH, true),
                 question("entities", InterviewCategory.ENTITIES,
-                        "What important information will the system store or manage?",
-                        "Key entities reveal data ownership, records, and validation needs.", RiskLevel.HIGH, true),
+                        "Which records are essential, and who owns them?",
+                        "The essential records reveal ownership, access, validation, and retention needs.", RiskLevel.HIGH, true),
                 question("integrations", InterviewCategory.INTEGRATIONS,
-                        "Which existing systems, APIs, files, devices, or services must it connect to?",
-                        "Integrations add security, reliability, and delivery risks that must be explicit.", RiskLevel.HIGH, true),
+                        "Which external service is essential to the core outcome?",
+                        "An essential dependency adds data, security, reliability, and recovery decisions.", RiskLevel.HIGH, true),
                 question("quality", InterviewCategory.QUALITY_GOALS,
-                        "What quality goals matter most—for example speed, security, accessibility, uptime, or privacy?",
-                        "Quality targets make non-functional requirements measurable instead of implied.", RiskLevel.HIGH, true),
+                        "Which quality outcome matters most at launch?",
+                        "Choosing one priority turns broad quality language into a measurable requirement.", RiskLevel.HIGH, true),
                 question("constraints", InterviewCategory.CONSTRAINTS,
-                        "What constraints must we respect: budget, deadline, technology, compliance, team capacity, or platform?",
-                        "Constraints shape feasible options and expose delivery trade-offs.", RiskLevel.HIGH, true),
+                        "Which project boundary cannot change?",
+                        "A fixed boundary makes scope and delivery trade-offs explicit.", RiskLevel.HIGH, true),
                 question("risks", InterviewCategory.RISKS,
-                        "What could make this project fail, harm users, or block delivery?",
-                        "Named risks can be mitigated; hidden risks cannot be assessed.", RiskLevel.HIGH, true),
+                        "Which realistic failure would cause the most harm?",
+                        "A concrete risk can produce prevention, detection, recovery, and escalation requirements.", RiskLevel.HIGH, true),
                 question("business-rules", InterviewCategory.BUSINESS_RULES,
-                        "Are there policies, calculations, eligibility rules, or approvals the system must enforce?",
-                        "Business rules must come from you; the interview will not invent them.", RiskLevel.HIGH, false),
+                        "Which decision must the product enforce consistently?",
+                        "Approval, eligibility, and calculation rules must come from an accountable owner.", RiskLevel.HIGH, false),
                 question("metrics", InterviewCategory.METRICS,
-                        "How will you know the project is successful after launch?",
-                        "Success metrics make the brief measurable and help prioritize later decisions.", RiskLevel.MEDIUM, false));
+                        "What result would prove the first release worked?",
+                        "A measurable result helps the team evaluate the release and prioritize what comes next.", RiskLevel.MEDIUM, false));
 
         Map<InterviewCategory, QuestionDefinition> categories = new EnumMap<>(InterviewCategory.class);
         Map<String, QuestionDefinition> keys = new java.util.HashMap<>();
@@ -218,6 +221,16 @@ public class DiscoveryQuestionCatalog {
         boolean highRisk = regulated || project.getType().name().equals("AI_SYSTEM")
                 || project.getType().name().equals("IOT")
                 || containsPositiveSignal(signals, "ai", "llm", "agent", "real-time", "critical", "offline");
+        boolean serviceBooking = containsPositiveSignal(signals, "booking", "appointment", "reservation", "availability")
+                && containsPositiveSignal(signals, "customer", "client", "professional", "provider", "service");
+
+        // A service-booking workflow is materially cross-cutting even when its
+        // short project description does not contain generic words such as
+        // "data", "risk", or "integration". The category validators below
+        // decide which concrete facets remain unresolved.
+        if (serviceBooking) {
+            required.addAll(EnumSet.allOf(InterviewCategory.class));
+        }
 
         if (multiRole || regulated) {
             required.add(InterviewCategory.STAKEHOLDERS);
@@ -240,6 +253,15 @@ public class DiscoveryQuestionCatalog {
     }
 
     /**
+     * Exposes the domain applicability decision used by the catalog so the
+     * readiness gate can require booking-specific evidence without coupling
+     * production logic to a fixture or project name.
+     */
+    public boolean serviceBookingApplies(ProjectEntity project, List<InterviewAnswerEntity> answers) {
+        return "booking product".equals(detectDomain(project, answers).label());
+    }
+
+    /**
      * Keeps the catalog bounded and reviewable while making the exact prompt
      * relevant to the project context. The AI planner still decides which
      * unanswered category is most valuable next; this layer ensures the
@@ -259,43 +281,20 @@ public class DiscoveryQuestionCatalog {
         String prompt = switch (question.category()) {
             case PROBLEM -> problemQuestion(domain);
             case USERS -> usersQuestion(domain);
-            case STAKEHOLDERS -> "When a " + domain.decisionFocus()
-                    + " decision conflicts with delivery speed, who has final authority, and who must approve the release?";
-            case SCOPE -> "For the first release, which complete " + domain.workflow()
-                    + " must work reliably, and which adjacent capability should deliberately wait?";
-            case EXCLUSIONS -> "Which nearby capability must be explicitly excluded from the first release - for example "
-                    + domain.exclusionExamples() + " - even if users request it?";
+            case STAKEHOLDERS -> "Who has final authority over " + domain.decisionFocus() + " decisions?";
+            case SCOPE -> "What is the smallest complete " + domain.workflow() + " the first release must support?";
+            case EXCLUSIONS -> "What should the first release deliberately leave out?";
             case WORKFLOWS -> workflowQuestion(domain);
             case ENTITIES -> entitiesQuestion(domain);
             case INTEGRATIONS -> integrationQuestion(domain);
             case QUALITY_GOALS -> qualityQuestion(domain);
             case CONSTRAINTS -> teamSize == null
-                    ? "When delivery pressure forces a trade-off, which boundary is fixed for the first release - launch date, budget, platform, or scope - and which may move?"
-                    : "With a confirmed team of " + teamSize
-                            + ", which boundary is fixed for the first release - launch date, budget, platform, or scope - and which may move?";
+                    ? "Which first-release boundary cannot change: date, budget, platform, or scope?"
+                    : "With a team of " + teamSize + ", which first-release boundary cannot change?";
             case RISKS -> riskQuestion(domain);
             case BUSINESS_RULES -> rulesQuestion(domain);
-            case METRICS -> "Which single result should prove the first release worked - such as "
-                    + domain.successMeasure() + " - and what baseline, target, and review period should be used?";
+            case METRICS -> "What measurable result would prove the first release worked?";
         };
-        String priorDecision = priorDecisionFocus(question.category(), answers);
-        if (priorDecision != null) {
-            String loweredPrompt = prompt.substring(0, 1).toLowerCase(Locale.ROOT) + prompt.substring(1);
-            prompt = switch (question.category()) {
-                case USERS -> "Because the priority is " + priorDecision + ", " + loweredPrompt;
-                case SCOPE -> "With " + priorDecision + " as the priority, " + loweredPrompt;
-                case WORKFLOWS -> "The release focus is " + priorDecision + ". " + prompt;
-                case ENTITIES -> "Within the release focus of " + priorDecision + ", " + loweredPrompt;
-                case INTEGRATIONS -> "For the release focus of " + priorDecision + ", " + loweredPrompt;
-                case QUALITY_GOALS, BUSINESS_RULES -> "With " + priorDecision
-                        + " already prioritized, " + loweredPrompt;
-                case RISKS, STAKEHOLDERS -> "Given the priority of " + priorDecision + ", " + loweredPrompt;
-                case EXCLUSIONS -> "To protect the boundary around " + priorDecision + ", " + loweredPrompt;
-                case METRICS -> "To measure progress on " + priorDecision + ", " + loweredPrompt;
-                case CONSTRAINTS -> "The release focus is " + priorDecision + ". " + prompt;
-                case PROBLEM -> prompt;
-            };
-        }
         String why = switch (question.category()) {
             case PROBLEM -> "This separates the outcome worth funding from possible features and gives the SRS a measurable purpose.";
             case USERS -> "Authority and responsibility define roles, permissions, notifications, and exception ownership.";
@@ -377,7 +376,13 @@ public class DiscoveryQuestionCatalog {
     }
 
     private DomainProfile detectDomainSource(String source) {
-        if (containsAny(source, "booking", "appointment", "schedule", "cleaner", "reservation")
+        if (containsAny(source, "legal", "law firm", "lawyer", "attorney", "solicitor", "case intake",
+                "client intake", "legal practice")) {
+            return new DomainProfile("legal services product", "prospective clients and legal staff",
+                    "client intake journey", "clients, intake responses, documents, and review decisions",
+                    "confidentiality, accessibility, record integrity, and clear status", "client eligibility, confidentiality, review ownership, and safe document handling");
+        }
+        if (containsAny(source, "booking", "appointment", "schedule", "professional", "reservation")
                 && !containsAny(source, "clinic", "health", "patient", "doctor", "medical", "hospital", "care", "ehr")) {
             return new DomainProfile("booking product", "customers, operators, and assigned staff",
                     "booking from request through completion", "customers, availability, bookings, and access details",
@@ -420,93 +425,101 @@ public class DiscoveryQuestionCatalog {
 
     private String problemQuestion(DomainProfile domain) {
         return switch (domain.label()) {
-            case "booking product" -> "Where does the current booking process break down most - availability, confirmation, reassignment, or follow-up - and which outcome must improve first?";
-            case "healthcare product" -> "Which care-coordination failure causes the most harmful delay or uncertainty today, and what observable outcome must improve first?";
-            case "fintech product" -> "Which money-movement problem is most costly today - failed collection, slow approval, reconciliation effort, or disputes - and what must improve first?";
-            case "AI product" -> "Which user decision or task should AI improve first, and what current failure would make an AI-assisted result unacceptable?";
-            case "data integration product" -> "Which broken data hand-off creates the most rework or unreliable decisions today, and what outcome should the first release improve?";
-            case "multi-workspace SaaS product" -> "Which team workflow loses the most time or control today, and what result must improve before adding broader features?";
-            default -> "Which part of the current process creates the most avoidable delay, error, or frustration, and what observable outcome must improve first?";
+            case "legal services product" -> "What is the biggest obstacle in the current client intake process?";
+            case "booking product" -> "What is the biggest problem in the current booking process?";
+            case "healthcare product" -> "Which care-coordination problem causes the most harmful delay or uncertainty?";
+            case "fintech product" -> "Which money-movement problem is most costly today?";
+            case "AI product" -> "Which user task should AI improve first?";
+            case "data integration product" -> "Which broken data hand-off creates the most rework or unreliable decisions?";
+            case "multi-workspace SaaS product" -> "Which team workflow loses the most time or control today?";
+            default -> "Which part of the current process creates the most avoidable delay, error, or frustration?";
         };
     }
 
     private String usersQuestion(DomainProfile domain) {
         return switch (domain.label()) {
-            case "booking product" -> "When a booking changes after it is requested, who may confirm, reassign, cancel, or override it, and who only needs to be informed?";
-            case "healthcare product" -> "During the core care hand-off, which roles may create, approve, correct, and view the record, and who owns unresolved exceptions?";
-            case "fintech product" -> "Who may initiate, approve, reverse, and investigate a payment, and which of those actions must never belong to the same role?";
-            case "AI product" -> "Who submits work to the AI, who may accept or correct its output, and which decisions require a separate human reviewer?";
-            case "data integration product" -> "Who owns the source data, who resolves rejected records, and who may approve a corrected synchronization?";
-            case "multi-workspace SaaS product" -> "Within each customer workspace, who may configure access, perform the core work, approve it, and inspect activity across the team?";
-            default -> "Who starts the core process, who completes it, who may approve or override the result, and who only needs visibility?";
+            case "legal services product" -> "Which named role decides the next step after a client submits an intake?";
+            case "booking product" -> "Which named role has authority to confirm a booking?";
+            case "healthcare product" -> "Which named role accepts responsibility for a care hand-off?";
+            case "fintech product" -> "Which named role has authority to approve a payment?";
+            case "AI product" -> "Which named role accepts an AI-assisted result?";
+            case "data integration product" -> "Who owns source data and resolves rejected records?";
+            case "multi-workspace SaaS product" -> "Which named role has final approval authority in each workspace?";
+            default -> "Which named role has final authority over the core result?";
         };
     }
 
     private String workflowQuestion(DomainProfile domain) {
         return switch (domain.label()) {
-            case "booking product" -> "After a customer requests a slot, what should happen through completion, including recovery from a conflict, non-response, cancellation, or missed notification?";
-            case "healthcare product" -> "From the first hand-off entry to confirmed receipt, how should each role recover when information is incomplete, urgent, rejected, or never acknowledged?";
-            case "fintech product" -> "From payment initiation to final status, how should each role recover when approval expires, the provider times out, or settlement disagrees?";
-            case "AI product" -> "From user input to accepted output, where must the product validate, explain uncertainty, request human review, or recover from an unsafe result?";
-            case "data integration product" -> "From source change to accepted destination record, how should validation, duplicates, partial failure, retry, and human correction work?";
-            case "multi-workspace SaaS product" -> "From submission to approval and completion, how should the workflow recover when an approver is absent, rejects the work, or the deadline passes?";
-            default -> "From the first user action to a completed result, how should the workflow recover when information is incomplete, approval is delayed, or the action fails?";
+            case "legal services product" -> "What should happen from a client starting an intake to receiving a clear next step?";
+            case "booking product" -> "What should happen from a customer requesting a slot to a confirmed outcome?";
+            case "healthcare product" -> "What should happen from hand-off creation to confirmed receipt?";
+            case "fintech product" -> "What should happen from payment initiation to final status?";
+            case "AI product" -> "What should happen from user input to an accepted AI-assisted result?";
+            case "data integration product" -> "What should happen from source change to an accepted destination record?";
+            case "multi-workspace SaaS product" -> "What should happen from submission to approval and completion?";
+            default -> "What should happen from the first user action to a completed result?";
         };
     }
 
     private String entitiesQuestion(DomainProfile domain) {
         return switch (domain.label()) {
-            case "booking product" -> "For customer addresses, access instructions, availability, and booking history, who may view or change each item, and when should access end?";
-            case "healthcare product" -> "Which patient and hand-off details are essential, who owns corrections, and when must access, retention, or deletion differ by role?";
-            case "fintech product" -> "Which payment, approval, refund, and reconciliation records are authoritative, who may correct them, and what audit history must remain immutable?";
-            case "AI product" -> "Which prompts, source data, outputs, feedback, and review decisions may be stored, who owns them, and which must be deleted or excluded from training?";
-            case "data integration product" -> "Which system is authoritative for each shared record, how are versions and duplicates identified, and who may correct rejected data?";
-            case "multi-workspace SaaS product" -> "Which records belong to a customer workspace, which may cross workspace boundaries, and what happens when access or a subscription ends?";
-            default -> "Which records are essential to the core workflow, who owns each record, and when may different roles view, change, retain, or delete it?";
+            case "legal services product" -> "Which client-intake record is authoritative?";
+            case "booking product" -> "Which booking record is authoritative?";
+            case "healthcare product" -> "Which care hand-off record is authoritative?";
+            case "fintech product" -> "Which payment record is authoritative?";
+            case "AI product" -> "Which AI-assisted work record is authoritative?";
+            case "data integration product" -> "Which system is authoritative for each shared record?";
+            case "multi-workspace SaaS product" -> "Which workspace record is authoritative?";
+            default -> "Which named record is authoritative for the core workflow?";
         };
     }
 
     private String integrationQuestion(DomainProfile domain) {
         return switch (domain.label()) {
+            case "legal services product" -> "Which existing calendar, document, identity, or case service is essential to the first release?";
             case "booking product" -> "If the first release uses reminders or calendar updates, which actions would depend on an external service, and what should users see or do when delivery fails?";
-            case "healthcare product" -> "Which existing clinical or identity system must exchange hand-off data, which system remains authoritative, and how should an outage affect care work?";
-            case "fintech product" -> "Which payment or identity provider owns each external status, and how should retries, duplicate callbacks, outages, and reconciliation differences be handled?";
-            case "AI product" -> "Which model or retrieval service is required, what data may be sent to it, and what usable fallback should remain when it is unavailable?";
-            case "data integration product" -> "For the highest-value data exchange, which system is authoritative, what triggers synchronization, and how should partial failure or replay be resolved?";
-            default -> "Which external service is essential to the core outcome, what data would cross that boundary, and what should remain usable if it is unavailable?";
+            case "healthcare product" -> "Which clinical or identity system is essential to the care hand-off?";
+            case "fintech product" -> "Which payment or identity provider is essential to final status?";
+            case "AI product" -> "Which model or retrieval service is essential to the core task?";
+            case "data integration product" -> "Which system is authoritative for the highest-value data exchange?";
+            default -> "Which external service is essential to the core outcome?";
         };
     }
 
     private String qualityQuestion(DomainProfile domain) {
         return switch (domain.label()) {
-            case "booking product" -> "At launch, which failure is least acceptable - a double-booking, exposed address, missed notification, or slow mobile booking - and what measurable target should prevent it?";
-            case "healthcare product" -> "Which launch failure is least acceptable - missed acknowledgment, incorrect access, unavailable hand-off data, or an untraceable edit - and what target would be safe enough?";
-            case "fintech product" -> "Which launch failure is least acceptable - duplicate charge, unauthorized approval, inconsistent status, or delayed recovery - and what measurable target should govern it?";
-            case "AI product" -> "Which quality failure is least acceptable - unsupported claims, unsafe output, private-data exposure, or excessive latency - and how will it be measured before launch?";
-            case "data integration product" -> "Which quality failure is least acceptable - lost records, duplicates, stale data, or silent rejection - and what measurable freshness or accuracy target is required?";
-            default -> "Which failure would most damage trust in the core workflow - unauthorized access, lost work, unavailable service, or slow completion - and what measurable launch target is required?";
+            case "legal services product" -> "Which quality failure would damage client trust most at launch?";
+            case "booking product" -> "Which quality failure would damage booking trust most at launch?";
+            case "healthcare product" -> "Which quality failure poses the greatest safety or privacy risk at launch?";
+            case "fintech product" -> "Which quality failure poses the greatest financial risk at launch?";
+            case "AI product" -> "Which quality failure would make an AI-assisted result unacceptable?";
+            case "data integration product" -> "Which data quality failure would cause the most downstream harm?";
+            default -> "Which quality failure would damage trust most at launch?";
         };
     }
 
     private String riskQuestion(DomainProfile domain) {
         return switch (domain.label()) {
-            case "booking product" -> "Which booking failure would create the most customer or operational harm, and who should detect, communicate, and resolve it?";
-            case "healthcare product" -> "Which realistic failure could delay care, expose patient information, or hide accountability, and where must prevention or human escalation occur?";
-            case "fintech product" -> "Which realistic failure could lose money or trust - duplicate processing, fraud, incorrect reversal, or unreconciled status - and who must resolve it?";
-            case "AI product" -> "Which AI failure could cause the most harm, and which output must be blocked, labeled uncertain, or escalated to a human?";
-            case "data integration product" -> "Which silent data failure could produce the worst downstream decision, and how should it be detected, contained, and replayed?";
-            default -> "Which credible failure could most harm users or invalidate the release, and who should detect, communicate, and recover from it?";
+            case "legal services product" -> "Which failure could most harm a prospective client or the practice?";
+            case "booking product" -> "Which booking failure would create the most customer or operational harm?";
+            case "healthcare product" -> "Which realistic failure could cause the most harm to care or privacy?";
+            case "fintech product" -> "Which realistic failure could cause the most financial loss or loss of trust?";
+            case "AI product" -> "Which AI failure could cause the most harm?";
+            case "data integration product" -> "Which silent data failure could cause the worst downstream decision?";
+            default -> "Which realistic failure could most harm users or invalidate the release?";
         };
     }
 
     private String rulesQuestion(DomainProfile domain) {
         return switch (domain.label()) {
-            case "booking product" -> "Which booking decisions require an explicit rule - confirmation, assignment, cancellation, refund, or override - and which role owns each exception?";
-            case "healthcare product" -> "Which hand-off actions require acknowledgment, escalation, correction approval, or restricted access, and who may override them in an emergency?";
-            case "fintech product" -> "Which limits, approvals, refund conditions, or separation-of-duty rules must be enforced before money can move?";
-            case "AI product" -> "Which inputs or outputs must be blocked, require human approval, or retain an explanation before the user may act on them?";
-            case "data integration product" -> "Which validation, deduplication, conflict, and correction rules decide whether a record is accepted automatically or sent for review?";
-            default -> "Which approval, eligibility, calculation, or access decision must the product enforce consistently, and who may authorize an exception?";
+            case "legal services product" -> "Which eligibility, conflict, consent, or review decision must be enforced consistently?";
+            case "booking product" -> "Which booking decision must follow an explicit rule?";
+            case "healthcare product" -> "Which hand-off decision must follow an explicit safety or access rule?";
+            case "fintech product" -> "Which approval or limit must be enforced before money can move?";
+            case "AI product" -> "Which AI input or output must require a block or human review?";
+            case "data integration product" -> "Which rule decides whether a record is accepted or sent for review?";
+            default -> "Which approval, eligibility, calculation, or access decision must be enforced consistently?";
         };
     }
 
@@ -516,7 +529,7 @@ public class DiscoveryQuestionCatalog {
             case USERS -> userChoices(domain);
             case STAKEHOLDERS -> List.of(
                     option("product-owner", "Product owner has final authority", "Centralizes scope decisions while named specialists sign off on defined risks."),
-                    option("operational-owner", "Operational owner has final authority", "Prioritizes real-world process fit and day-to-day accountability."),
+                    option("operational-owner", "Named operational owner decides routine policy while a risk owner may block unsafe release", "Separates day-to-day accountability from the authority to stop a consequential release."),
                     option("joint-approval", "Business and risk owners approve jointly", "Adds protection for consequential releases but can lengthen decision time."));
             case SCOPE -> scopeChoices(domain);
             case EXCLUSIONS -> List.of(
@@ -535,7 +548,7 @@ public class DiscoveryQuestionCatalog {
             case CONSTRAINTS -> List.of(
                     option("date-fixed", "Launch date is fixed", "Scope must shrink before quality or critical controls are compromised."),
                     option("budget-fixed", "Budget and team are fixed", "The release must favor a smaller thin slice and managed services."),
-                    option("platform-fixed", "Platform or technology is fixed", "Architecture must fit the existing environment even when alternatives are simpler."),
+                    option("platform-fixed", "Keep the confirmed platform fixed and move scope or schedule before replacing it", "Requires the exact platform or technology constraint to be named."),
                     option("scope-fixed", "Required scope is fixed", "Time, staffing, or phased delivery must absorb the uncertainty."));
             case RISKS -> riskChoices(domain);
             case BUSINESS_RULES -> ruleChoices(domain);
@@ -548,6 +561,10 @@ public class DiscoveryQuestionCatalog {
 
     private List<ChoiceOption> problemChoices(DomainProfile domain) {
         return switch (domain.label()) {
+            case "legal services product" -> List.of(
+                    option("intake-dropoff", "Reduce intake drop-off", "Prioritizes a shorter, clearer client experience with visible progress and recovery."),
+                    option("slow-qualification", "Shorten review time", "Prioritizes complete intake information, clear ownership, and a timely next step."),
+                    option("missing-intake-context", "Prevent missing client context", "Prioritizes relevant questions, document completeness, and safe correction before review."));
             case "booking product" -> List.of(
                     option("availability-conflicts", "Prevent availability conflicts", "Prioritizes accurate availability and conflict prevention before convenience features."),
                     option("slow-confirmation", "Shorten confirmation time", "Prioritizes response ownership, deadlines, and automatic status updates."),
@@ -569,10 +586,14 @@ public class DiscoveryQuestionCatalog {
 
     private List<ChoiceOption> scopeChoices(DomainProfile domain) {
         return switch (domain.label()) {
+            case "legal services product" -> List.of(
+                    option("request-decision", "Complete intake-to-decision journey", "Covers intake, document upload, review, a clear decision, and client status."),
+                    option("client-intake-first", "Client intake first", "Prioritizes a clear submission experience while staff handle review manually."),
+                    option("staff-review-first", "Staff review first", "Proves review, assignment, and decision controls before broader client self-service."));
             case "booking product" -> List.of(
                     option("closed-booking", "Complete booking journey", "Covers request, confirmation, assignment, changes, completion, and visible recovery."),
                     option("operations-first", "Owner scheduling first", "Proves availability and assignment controls before broader customer self-service."),
-                    option("customer-first", "Customer booking first", "Prioritizes request and status while owners handle unusual conflicts manually."));
+                    option("customer-first", "Customers request and track bookings while owners resolve exceptional conflicts", "Keeps the customer journey self-service while a named owner handles unusual scheduling conflicts manually."));
             case "healthcare product" -> List.of(
                     option("closed-handoff", "Closed-loop care hand-off", "Covers creation, validation, acknowledgment, escalation, correction, and traceability."),
                     option("clinical-team-first", "Clinical-team workflow first", "Proves safety and accountability before any patient-facing experience."),
@@ -590,10 +611,15 @@ public class DiscoveryQuestionCatalog {
 
     private List<ChoiceOption> userChoices(DomainProfile domain) {
         return switch (domain.label()) {
+            case "legal services product" -> List.of(
+                    option("client-submits", "Client owns intake and corrections", "Lets prospective clients submit and correct their own information without seeing internal review notes."),
+                    option("coordinator-reviews", "Intake coordinator reviews completeness", "Creates a clear owner for missing information, routing, and response time."),
+                    option("lawyer-decides", "Lawyer decides the next step", "Keeps eligibility and representation decisions with an accountable professional."),
+                    option("admin-visibility", "Administrator sees status only", "Supports operations without granting unnecessary access to confidential intake details."));
             case "booking product" -> List.of(
                     option("owner-controls", "Owner controls confirmation and overrides", "Keeps schedule authority with the owner and requires a response deadline for pending requests."),
                     option("customer-cutoff", "Customer controls changes before a cutoff", "Enables self-service while requiring an explicit cutoff and clear handling afterward."),
-                    option("cleaner-assignment", "Cleaner accepts or declines assignments", "Gives cleaners availability control without authority over price or customer terms."),
+                    option("professional-assignment", "Assigned professionals accept or decline work without changing customer terms", "Gives the assigned professional availability control while price and customer terms remain owner-controlled."),
                     option("state-based-authority", "Authority changes with booking status", "Requires explicit permissions for pending, confirmed, active, and completed states."));
             case "healthcare product" -> List.of(
                     option("sender-accountable", "Sending clinician owns complete hand-off data", "Makes the originator accountable for required context and corrections before acceptance."),
@@ -615,6 +641,10 @@ public class DiscoveryQuestionCatalog {
 
     private List<ChoiceOption> workflowChoices(DomainProfile domain) {
         return switch (domain.label()) {
+            case "legal services product" -> List.of(
+                    option("request-correction", "Request missing information", "Keeps the intake editable and tells the client exactly what is still needed."),
+                    option("route-reviewer", "Route to the right reviewer", "Uses a visible owner and response target instead of a generic shared queue."),
+                    option("clear-next-step", "Send a clear next step", "Confirms whether the matter proceeds, needs more information, or cannot be accepted."));
             case "booking product" -> List.of(
                     option("owner-resolves", "Owner resolves conflicts", "Keeps assignment authority clear but requires a response deadline and escalation."),
                     option("offer-alternatives", "Offer alternative slots automatically", "Reduces waiting while requiring trustworthy availability and conflict prevention."),
@@ -636,6 +666,11 @@ public class DiscoveryQuestionCatalog {
 
     private List<ChoiceOption> entityChoices(DomainProfile domain) {
         return switch (domain.label()) {
+            case "legal services product" -> List.of(
+                    option("minimum-intake", "Keep only necessary intake information", "Limits collection to information needed for conflict, eligibility, and next-step review."),
+                    option("review-scoped-access", "Access follows the review role", "Restricts confidential information to the people actively responsible for the intake."),
+                    option("document-integrity", "Preserve document versions and status", "Makes uploads, replacements, review state, and errors understandable and traceable."),
+                    option("retention-owner", "Retention follows an accountable policy", "Keeps deletion and retention decisions out of ad hoc user behavior."));
             case "healthcare product" -> List.of(
                     option("minimum-handoff", "Minimum necessary hand-off record", "Limits the record to information needed for safe coordination and explicit validation."),
                     option("role-and-state-access", "Access depends on role and hand-off state", "Removes broad visibility after responsibility changes while preserving traceability."),
@@ -647,7 +682,7 @@ public class DiscoveryQuestionCatalog {
                     option("policy-versioned", "Decisions retain the policy version used", "Makes later review explainable when approval rules change."),
                     option("audit-immutable", "Decision history cannot be overwritten", "Preserves who acted, when, under which authority, and why."));
             default -> List.of(
-                    option("least-privilege", "Access only while needed", "Limits sensitive record visibility by role and workflow state."),
+                    option("least-privilege", "Role- and state-based access ends when workflow responsibility ends", "Requires an auditable access-removal event at the state transition."),
                     option("owner-controlled", "Record owner controls sharing", "Gives the accountable user control but needs administrative recovery rules."),
                     option("policy-controlled", "Organization policy controls access", "Provides consistent permissions and auditability across users and teams."),
                     option("immutable-history", "Keep an immutable change history", "Supports disputes and audits but increases retention and privacy considerations."));
@@ -656,6 +691,11 @@ public class DiscoveryQuestionCatalog {
 
     private List<ChoiceOption> qualityChoices(DomainProfile domain) {
         return switch (domain.label()) {
+            case "legal services product" -> List.of(
+                    option("security-first", "Protect confidential client information", "Prioritizes least privilege, secure defaults, and auditable access failures."),
+                    option("integrity-first", "Never lose an intake or document", "Prioritizes upload integrity, idempotent submission, and visible recovery."),
+                    option("status-clarity", "Make every intake status clear", "Prioritizes plain-language feedback, ownership, and an understandable next step."),
+                    option("accessible-intake", "Keep intake accessible on mobile", "Requires readable, keyboard-friendly, responsive completion on realistic devices."));
             case "booking product" -> List.of(
                     option("no-double-booking", "Prevent confirmed double-bookings", "Prioritizes atomic availability checks and conflict tests before convenience features."),
                     option("protect-location", "Protect address and access details", "Prioritizes state-based visibility, auditability, and prompt access removal."),
@@ -679,6 +719,13 @@ public class DiscoveryQuestionCatalog {
     }
 
     private List<ChoiceOption> riskChoices(DomainProfile domain) {
+        if (domain.label().equals("legal services product")) {
+            return List.of(
+                    option("confidentiality-breach", "Confidential intake information is exposed", "Prioritizes least privilege, secure handling, and a tested incident owner."),
+                    option("lost-submission", "A submitted intake or document is lost", "Prioritizes durable submission, visible status, and recoverable upload handling."),
+                    option("wrong-intake-decision", "A client receives the wrong next step", "Prioritizes accountable review, clear decision evidence, and correction."),
+                    option("missed-response", "A completed intake receives no response", "Prioritizes ownership, response targets, escalation, and client-visible status."));
+        }
         if (domain.label().equals("healthcare product")) {
             return List.of(
                     option("missed-escalation", "Unacknowledged urgent hand-off", "Prioritizes deadlines, backup recipients, and evidence that escalation occurred."),
@@ -688,17 +735,22 @@ public class DiscoveryQuestionCatalog {
         }
         return List.of(
                 option("prevent", "Prevent the failure by design", "Use validation, permissions, and safe defaults before harm can occur."),
-                option("detect-recover", "Detect quickly and recover", "Use monitoring, audit history, alerts, and a tested recovery owner."),
+                option("detect-recover", "Named operations owner detects alerts, contains impact, and runs tested recovery", "Requires an observable detection signal and a specific recovery result."),
                 option("human-review", "Require human review", "Route consequential or ambiguous cases to an accountable person."),
                 option("limit-impact", "Limit the blast radius", "Isolate users, records, or transactions so one failure cannot spread."));
     }
 
     private List<ChoiceOption> ruleChoices(DomainProfile domain) {
         return switch (domain.label()) {
+            case "legal services product" -> List.of(
+                    option("conflict-before-review", "Check conflicts before detailed review", "Protects confidentiality by limiting access before the practice confirms it can proceed."),
+                    option("consent-before-upload", "Capture consent before document upload", "Makes the client understand how sensitive information will be used before transmission."),
+                    option("eligibility-human-owned", "A named reviewer owns eligibility", "Keeps consequential intake decisions accountable instead of inventing automated judgment."),
+                    option("override-audited", "Exceptions require a reason", "Allows unusual cases without erasing who changed the normal rule and why."));
             case "booking product" -> List.of(
                     option("change-cutoff", "Changes follow a clear cutoff", "Defines when customers may self-serve and when an owner decides the exception."),
                     option("availability-before-confirm", "Availability is rechecked before confirmation", "Prevents stale schedules from creating a confirmed conflict during simultaneous requests."),
-                    option("assignment-acceptance", "Cleaner acceptance has a deadline", "Keeps bookings from waiting indefinitely and defines reassignment after silence."),
+                    option("assignment-acceptance", "Professional acceptance expires at a confirmed deadline and then reassigns", "Keeps bookings from waiting indefinitely and makes reassignment after silence an explicit state transition."),
                     option("override-reason", "Owner overrides require a reason", "Allows exceptional handling while preserving who changed the normal rule and why."));
             case "healthcare product" -> List.of(
                     option("acknowledgment-deadline", "Acknowledgment has a governed deadline", "Defines when responsibility transfers and when silence escalates."),
@@ -720,6 +772,11 @@ public class DiscoveryQuestionCatalog {
 
     private List<ChoiceOption> metricChoices(DomainProfile domain) {
         return switch (domain.label()) {
+            case "legal services product" -> List.of(
+                    option("intake-completion-rate", "Completed intake rate", "Measures whether prospective clients can finish the guided process without avoidable drop-off."),
+                    option("intake-review-time", "Time to a clear next step", "Measures whether ownership and complete information make review faster."),
+                    option("correction-rate", "Intakes returned for correction", "Shows whether the questions and upload guidance collect usable information."),
+                    option("privacy-guardrail", "Privacy incident guardrail", "Prevents faster intake from being called successful if confidentiality risk increases."));
             case "booking product" -> List.of(
                     option("booking-conflict-rate", "Confirmed booking-conflict rate", "Measures whether the release eliminates the scheduling error it was funded to prevent."),
                     option("confirmation-time", "Request-to-confirmation time", "Measures whether ownership and deadlines make bookings faster for customers."),
@@ -783,6 +840,7 @@ public class DiscoveryQuestionCatalog {
 
         String decisionFocus() {
             return switch (label) {
+                case "legal services product" -> "client eligibility or confidentiality";
                 case "healthcare product" -> "safety or privacy";
                 case "fintech product" -> "financial control";
                 case "AI product" -> "AI safety or human-oversight";
