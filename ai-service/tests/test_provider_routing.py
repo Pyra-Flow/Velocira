@@ -38,6 +38,18 @@ from app.providers import (
 )
 
 
+def test_settings_loads_unique_gemini_keys_in_priority_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "primary-key")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "secondary-key")
+    monkeypatch.setenv("GEMINI_API_KEY_3", "primary-key")
+
+    settings = Settings.from_environment()
+
+    assert settings.gemini_api_keys == ("primary-key", "secondary-key")
+
+
 def _generation_request() -> GenerationRequest:
     return GenerationRequest.model_validate(
         {
@@ -1336,6 +1348,67 @@ async def test_call_model_retries_one_explicit_503_on_the_same_model(
     assert response["_velocira_transport_attempt_count"] == 2
 
 
+@pytest.mark.asyncio
+async def test_call_model_rotates_gemini_key_after_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = GeminiProvider(Settings(
+        provider="gemini",
+        model="gemini-3.7-flash",
+        discovery_model="gemini-3.6-flash",
+        gemini_api_key="primary-key",
+        gemini_api_key_2="secondary-key",
+        gemini_api_key_3="tertiary-key",
+    ))
+    used_keys: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int) -> None:
+            self.status_code = status_code
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {
+                "candidates": [{
+                    "finishReason": "STOP",
+                    "content": {"parts": [{"text": '{"status":"READY"}'}]},
+                }],
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+        async def post(self, url: str, *, headers: dict[str, str], json: dict[str, object]) -> FakeResponse:
+            del url, json
+            used_keys.append(headers["x-goog-api-key"])
+            return FakeResponse(429 if len(used_keys) == 1 else 200)
+
+    monkeypatch.setattr("app.providers.httpx.AsyncClient", FakeAsyncClient)
+
+    response = await provider._call_model(
+        "gemini-3.7-flash",
+        "Return READY.",
+        "key-rotation",
+        max_output_tokens=512,
+        response_json_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"status": {"type": "string"}},
+            "required": ["status"],
+        },
+    )
+
+    assert used_keys == ["primary-key", "secondary-key"]
+    assert response["_velocira_transport_attempt_count"] == 2
+
+
 def test_candidate_text_ignores_thought_parts_and_returns_only_final_json() -> None:
     final_json = '{"schema_version":"2.0","requirements":[]}'
     response = {
@@ -1720,7 +1793,7 @@ async def test_flash_lite_quality_repair_batches_requirements_and_long_form_sect
     request = _srs_request()
     provider = GeminiProvider(Settings(
         provider="gemini",
-        model="gemini-3.5-flash-lite",
+        model="gemini-3.1-flash-lite-preview",
         discovery_model="gemini-3.6-flash",
         gemini_api_key="test-key",
     ))
@@ -1767,7 +1840,7 @@ async def test_flash_lite_quality_repair_batches_requirements_and_long_form_sect
         return ({
             "candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": json.dumps(payload)}]}}],
             "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 20},
-        }, "gemini-3.5-flash-lite")
+        }, "gemini-3.1-flash-lite-preview")
 
     monkeypatch.setattr(provider, "_generate_configured_model", fake_generate)
     result = await provider.repair_srs_quality(

@@ -357,6 +357,34 @@ def test_targeted_open_question_is_used_for_the_exact_missing_facet() -> None:
     assert "retention" not in result.next_question.question_text.casefold()
 
 
+def test_targeted_follow_up_may_refine_the_same_question_key_without_false_duplicate() -> None:
+    payload = DiscoveryPlanningRequest.model_validate({
+        "project": _project(SCENARIOS["simple"]).model_dump(mode="json"),
+        "answers": [{
+            "question_key": "constraints",
+            "category": "CONSTRAINTS",
+            "disposition": "ANSWERED",
+            "question_text": "Which deployment boundary must govern the first release?",
+            "answer_text": "The browser-based web platform is fixed.",
+        }],
+        "open_questions": [{
+            "key": "incomplete-constraints-facet-fixed-value",
+            "category": "CONSTRAINTS",
+            "question_text": "Which deployment boundary must govern the first release?",
+            "reason": "The exact fixed platform remains incomplete.",
+            "risk_level": "HIGH",
+            "material": True,
+        }],
+        "candidate_questions": [item.model_dump(mode="json") for item in _candidates({"CONSTRAINTS"})],
+    })
+
+    result = plan_next_question(payload)
+
+    assert result.next_question is not None
+    assert result.next_question.key == "constraints"
+
+
+
 def test_generated_question_rejects_compound_actor_access_retention_and_lifecycle_inventory() -> None:
     payload = DiscoveryPlanningRequest(
         project=_project(SCENARIOS["simple"]),

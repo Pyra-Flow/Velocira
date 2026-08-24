@@ -294,10 +294,24 @@ def create_app(
                     planner="gemini-context-planner-v3",
                     model=planned.model or provider_instance.model,
                 )
-            except AiServiceError:
-                # A live planner is fail-closed. Returning the deterministic
-                # draft here would silently confirm content from another model.
-                raise
+            except AiServiceError as exc:
+                if exc.code not in {
+                    ErrorCode.PROVIDER_INVALID_OUTPUT,
+                    ErrorCode.PROVIDER_RATE_LIMIT,
+                    ErrorCode.PROVIDER_TIMEOUT,
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                }:
+                    raise
+                # Discovery always begins with a server-owned, quality-validated
+                # deterministic plan. If the live author cannot improve it after
+                # its bounded retries, preserve that safe plan instead of making
+                # project creation unavailable.
+                logger.warning(
+                    "discovery_live_planner_fallback code=%s project_id=%s correlation_id=%s",
+                    exc.code.value,
+                    payload.project.id,
+                    correlation_id,
+                )
             except ValueError as exc:
                 raise AiServiceError(
                     ErrorCode.PROVIDER_INVALID_OUTPUT,

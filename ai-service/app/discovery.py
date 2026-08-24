@@ -1008,7 +1008,7 @@ def _validate_quality(
     required_matches = min(2, len(project_terms))
     if required_matches and specificity_matches < required_matches:
         raise ValueError("Planner question did not use distinctive project description or project-field context")
-    if _is_semantic_duplicate(payload, text):
+    if _is_semantic_duplicate(payload, question.key, text):
         raise ValueError("Planner question repeats an earlier question")
     _reject_unsupported_claims(payload, text + " " + why)
     if len(options) < 4:
@@ -1064,9 +1064,18 @@ def _validate_atomic_question(question_text: str) -> None:
         raise ValueError("Planner question combines unrelated decision facets")
 
 
-def _is_semantic_duplicate(payload: DiscoveryPlanningRequest, question_text: str) -> bool:
+def _is_semantic_duplicate(
+    payload: DiscoveryPlanningRequest,
+    question_key: str,
+    question_text: str,
+) -> bool:
     current = _semantic_terms(question_text)
     for answer in payload.answers:
+        if answer.question_key == question_key:
+            # Material open facets deliberately revisit the same server-owned
+            # question key. Compare against other decisions, not the answer
+            # currently being refined.
+            continue
         if not answer.question_text:
             continue
         prior = _semantic_terms(answer.question_text)

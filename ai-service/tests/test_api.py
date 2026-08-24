@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.errors import AiServiceError, ErrorCode
 from app.main import create_app
 from app.models import UsageMetadata
 from app.providers import ProviderResult
@@ -179,3 +180,32 @@ def test_discovery_provider_only_receives_the_top_ranked_candidate() -> None:
     assert response.status_code == 200
     assert response.json()["planner"] == "gemini-context-planner-v3"
     assert [candidate["key"] for candidate in planner.candidates] == ["users"]
+
+
+def test_discovery_uses_safe_server_plan_when_live_author_exhausts_quality_retries() -> None:
+    class InvalidPlanner:
+        model = "test-discovery-model"
+
+        async def plan_discovery_question(self, **kwargs):  # type: ignore[no-untyped-def]
+            raise AiServiceError(
+                ErrorCode.PROVIDER_INVALID_OUTPUT,
+                "The provider did not return a valid discovery question.",
+                status_code=502,
+            )
+
+    client = TestClient(create_app(settings=Settings(environment="test"), provider=InvalidPlanner()))
+    response = client.post(
+        "/v1/discovery/plan",
+        json={
+            "project": _payload()["project"],
+            "answers": [],
+            "visible_open_question_keys": [],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["planner"] == "deterministic-discovery-strategist-v3"
+    assert body["model"] == "deterministic"
+    assert body["next_question"]["key"] == "problem"
+    assert body["next_question"]["options"][-1]["key"] == "not-decided"

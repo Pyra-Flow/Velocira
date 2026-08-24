@@ -141,13 +141,13 @@ class GeminiProvider:
     discovery_model = "gemini-3.6-flash"
 
     def __init__(self, settings: Settings) -> None:
-        if not settings.gemini_api_key:
+        if not settings.gemini_api_keys:
             raise AiServiceError(
                 ErrorCode.PROVIDER_AUTH,
                 "GEMINI_API_KEY must be configured for the Gemini provider.",
                 status_code=503,
             )
-        self._api_key = settings.gemini_api_key
+        self._api_keys = settings.gemini_api_keys
         self._base_url = settings.gemini_base_url
         # `model` remains the provider's public/default model for readiness and
         # generic document generation. Discovery has its own lower-latency model.
@@ -621,7 +621,7 @@ class GeminiProvider:
             "QUALITY_ISSUES_JSON:\n" + json.dumps(issues, ensure_ascii=False, separators=(",", ":")),
             "FINAL_CHECK: address every QUALITY_ISSUES_JSON item in the matching target. For an unmeasurable-quality issue, remove the flagged vague adjective from the SHALL statement and replace it with an observable behavior grounded in the brief. Return the exact two-array JSON object now.",
         ))
-        if self.model.strip().casefold().startswith("gemini-3.5-flash-lite"):
+        if "flash-lite" in self.model.strip().casefold():
             patch, repair_usage, actual_model = await self._repair_srs_quality_in_batches(
                 request=request,
                 artifact=artifact,
@@ -637,8 +637,8 @@ class GeminiProvider:
                 model=self.model,
                 max_output_tokens=20_000,
                 thinking_level="low",
-                # Gemini 3.5 rejects this nested repair schema before generation;
-                # other current Gemini routes keep strict structured output here.
+                # Flash-Lite routes use the bounded batch path above because
+                # they reject this deeply nested repair schema before generation.
                 response_json_schema=(
                     None
                     if self.model.strip().casefold().startswith("gemini-3.5-flash")
@@ -1221,20 +1221,27 @@ class GeminiProvider:
             )
         url = f"{self._base_url}/models/{model}:generateContent"
         transport_attempt = 0
+        key_index = 0
+        transient_retry_available = True
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(self._provider_timeout_seconds, connect=5.0)
             ) as client:
-                for transport_attempt in (1, 2):
+                while transport_attempt < len(self._api_keys) + 1:
+                    transport_attempt += 1
                     response = await client.post(
                         url,
-                        headers={"x-goog-api-key": self._api_key, "X-Correlation-Id": correlation_id},
+                        headers={"x-goog-api-key": self._api_keys[key_index], "X-Correlation-Id": correlation_id},
                         json=payload,
                     )
-                    # One bounded, same-model retry handles the model service's
-                    # explicit transient-capacity response. It never changes
-                    # the request contract, model, or fail-closed behavior.
-                    if response.status_code == 503 and transport_attempt == 1:
+                    # Quota is key-scoped. Rotate through explicitly configured
+                    # credentials without changing the model or request contract.
+                    if response.status_code == 429 and key_index + 1 < len(self._api_keys):
+                        key_index += 1
+                        continue
+                    # One bounded, same-model retry handles transient capacity.
+                    if response.status_code == 503 and transient_retry_available:
+                        transient_retry_available = False
                         await asyncio.sleep(1.0)
                         continue
                     break
@@ -1273,11 +1280,14 @@ class GeminiProvider:
         """Collect a long Gemini response incrementally before strict parsing."""
         url = f"{self._base_url}/models/{model}:streamGenerateContent?alt=sse"
         transport_attempt = 0
+        key_index = 0
+        transient_retries_remaining = 2
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(self._provider_timeout_seconds, connect=5.0)
             ) as client:
-                for transport_attempt in (1, 2, 3):
+                while transport_attempt < len(self._api_keys) + 2:
+                    transport_attempt += 1
                     text_parts: list[str] = []
                     finish_reason = ""
                     usage_metadata: dict[str, Any] = {}
@@ -1285,11 +1295,16 @@ class GeminiProvider:
                     async with client.stream(
                         "POST",
                         url,
-                        headers={"x-goog-api-key": self._api_key, "X-Correlation-Id": correlation_id},
+                        headers={"x-goog-api-key": self._api_keys[key_index], "X-Correlation-Id": correlation_id},
                         json=payload,
                     ) as response:
-                        if response.status_code == 503 and transport_attempt < 3:
+                        if response.status_code == 429 and key_index + 1 < len(self._api_keys):
                             await response.aread()
+                            key_index += 1
+                            continue
+                        if response.status_code == 503 and transient_retries_remaining:
+                            await response.aread()
+                            transient_retries_remaining -= 1
                             await asyncio.sleep(1.0)
                             continue
                         if response.status_code >= 400:
@@ -1326,7 +1341,8 @@ class GeminiProvider:
                                 model_version = str(event["modelVersion"])
                     if text_parts and finish_reason == "STOP":
                         break
-                    if not finish_reason and transport_attempt < 3:
+                    if not finish_reason and transient_retries_remaining:
+                        transient_retries_remaining -= 1
                         await asyncio.sleep(1.0)
                         continue
                     break
