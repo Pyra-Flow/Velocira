@@ -41,6 +41,7 @@ import org.springframework.test.context.ActiveProfiles;
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.UUID;
@@ -67,65 +68,79 @@ class DocumentationPackageIntegrationTest {
     @Autowired private ObjectMapper objectMapper;
 
     @Test
-    void generatedSrsProducesValidatedPackageAndImmediateImmutableZip() throws Exception {
+    void generatedPackageIsStructurallyValidButDoesNotAutoApproveOrEmitUnsupportedArtifacts() {
         Fixture fixture = fixture();
         DocumentationDtos.PackageResponse generated = packageService.generate(fixture.project().getId(), fixture.owner().getId(), fixture.srs().getId());
 
         assertThat(generated.validation().path("valid").asBoolean()).isTrue();
-        assertThat(generated.validation().path("artifactsChecked").asInt()).isEqualTo(16);
+        assertThat(generated.validation().path("approvalEligible").asBoolean()).isFalse();
+        assertThat(generated.validation().path("materialGaps")).isNotEmpty();
+        assertThat(generated.validation().path("artifactsChecked").asInt()).isLessThan(DocumentationArtifactType.values().length);
         assertThat(generated.validation().path("requirementTraceabilityCoverage").asDouble()).isEqualTo(100.0);
-        assertThat(generated.validation().path("totalWords").asInt()).isGreaterThan(1_000);
         assertThat(generated.artifacts()).extracting(DocumentationDtos.ArtifactResponse::type)
-                .containsExactlyInAnyOrder(com.velocira.backend.documentation.model.DocumentationArtifactType.values());
-        assertThat(generated.artifacts().stream()
+                .contains(DocumentationArtifactType.SRS, DocumentationArtifactType.BRD, DocumentationArtifactType.ARCHITECTURE,
+                        DocumentationArtifactType.USE_CASES, DocumentationArtifactType.C4_CONTEXT, DocumentationArtifactType.DATA_DICTIONARY,
+                        DocumentationArtifactType.SECURITY, DocumentationArtifactType.TEST_PLAN, DocumentationArtifactType.USER_MANUAL,
+                        DocumentationArtifactType.RISK_REGISTER, DocumentationArtifactType.TRACEABILITY)
+                .doesNotContain(DocumentationArtifactType.OPENAPI, DocumentationArtifactType.ERD,
+                        DocumentationArtifactType.WORKFLOWS, DocumentationArtifactType.DEPLOYMENT, DocumentationArtifactType.OPERATIONS);
+        String srsSource = generated.artifacts().stream()
                 .filter(artifact -> artifact.type() == com.velocira.backend.documentation.model.DocumentationArtifactType.SRS)
-                .findFirst().orElseThrow().sourceContent()).doesNotContain("\\n");
+                .findFirst().orElseThrow().sourceContent();
+        assertThat(srsSource).doesNotContain("\\n", "| Generation mode | EXHAUSTIVE |")
+                .contains("| Generation mode | STANDARD |");
         assertThat(generated.traceLinks()).hasSize(1);
-        assertThat(generated.status()).isEqualTo("APPROVED");
+        assertThat(generated.status()).isEqualTo("NEEDS_REVIEW");
         DocumentationDtos.TraceResponse trace = generated.traceLinks().getFirst();
         assertThat(trace.useCaseId()).isEqualTo("UC-001");
         assertThat(trace.apiOperationId()).isNull();
         assertThat(trace.acceptanceCriterionId()).isEqualTo("AC-srs-fr-001-001");
 
-        DocumentationDtos.ExportResponse exported = exportService.create(fixture.project().getId(), generated.id(), fixture.owner().getId(), DocumentationExportFormat.ZIP);
-        DocumentationExportService.Download download = exportService.download(fixture.project().getId(), generated.id(), exported.id(), fixture.owner().getId());
+        assertThat(generated.canonicalModel().path("documentPlan").toString())
+                .contains("\"artifactType\":\"OPENAPI\",\"status\":\"OMITTED\"")
+                .contains("zero-endpoint contract would be misleading");
+        assertThatThrownBy(() -> exportService.create(fixture.project().getId(), generated.id(), fixture.owner().getId(), DocumentationExportFormat.ZIP))
+                .hasMessageContaining("Approve the documentation package");
+        assertThatThrownBy(() -> packageService.approve(fixture.project().getId(), generated.id(), fixture.owner().getId()))
+                .hasMessageContaining("not approval-eligible");
+    }
 
-        assertThat(download.bytes()).isNotEmpty();
-        try (ZipInputStream zip = new ZipInputStream(new java.io.ByteArrayInputStream(download.bytes()))) {
-            java.util.Map<String, byte[]> entries = new java.util.HashMap<>();
-            java.util.zip.ZipEntry entry;
-            while ((entry = zip.getNextEntry()) != null) entries.put(entry.getName(), zip.readAllBytes());
-            assertThat(entries.keySet()).contains(
-                    "openapi.json", "openapi.yaml", "diagrams/use-cases.puml", "diagrams/erd.mmd",
-                    "diagrams/c4-context.mmd", "diagrams/workflow.mmd", "diagrams/c4-context.svg", "diagrams/workflow.svg",
-                    "documents/security.md", "documents/test-plan.md", "documents/operations.md", "documents/user-manual.md",
-                    "documentation-package.docx", "documentation-package.pdf");
-            assertThat(new String(entries.get("README.md"), StandardCharsets.UTF_8)).contains("Package v1", "generated from SRS v1");
-            try (PDDocument pdf = Loader.loadPDF(entries.get("documentation-package.pdf"));
-                 XWPFDocument docx = new XWPFDocument(new java.io.ByteArrayInputStream(entries.get("documentation-package.docx")))) {
-                assertThat(pdf.getNumberOfPages()).isPositive();
-                assertThat(docx.getParagraphs()).isNotEmpty();
-                assertThat(docx.getDocument().getBody().isSetSectPr()).isTrue();
-            }
-        }
+    @Test
+    void packageDocumentsReflectTheSourceSrsApprovalState() {
+        Fixture fixture = fixture();
+        fixture.srs().setStatus(SrsVersionStatus.APPROVED);
+        srsVersionRepository.save(fixture.srs());
 
-        DocumentationDtos.ExportResponse yaml = exportService.create(fixture.project().getId(), generated.id(), fixture.owner().getId(), DocumentationExportFormat.OPENAPI_YAML);
-        DocumentationExportService.Download yamlDownload = exportService.download(fixture.project().getId(), generated.id(), yaml.id(), fixture.owner().getId());
-        DocumentationDtos.ExportResponse json = exportService.create(fixture.project().getId(), generated.id(), fixture.owner().getId(), DocumentationExportFormat.OPENAPI_JSON);
-        DocumentationExportService.Download jsonDownload = exportService.download(fixture.project().getId(), generated.id(), json.id(), fixture.owner().getId());
-        String yamlText = new String(yamlDownload.bytes(), StandardCharsets.UTF_8);
-        com.fasterxml.jackson.databind.JsonNode yamlContract = new YAMLMapper().readTree(yamlText);
-        assertThat(yamlContract.path("openapi").asText()).isEqualTo("3.1.1");
-        assertThat(yamlContract.path("paths").isEmpty()).isTrue();
-        assertThat(yamlContract.path("components").path("schemas").path("Patient").isObject()).isTrue();
-        assertThat(yamlContract).isEqualTo(objectMapper.readTree(jsonDownload.bytes()));
+        DocumentationDtos.PackageResponse generated = packageService.generate(fixture.project().getId(), fixture.owner().getId(), fixture.srs().getId());
+
+        String srsSource = generated.artifacts().stream()
+                .filter(artifact -> artifact.type() == DocumentationArtifactType.SRS)
+                .findFirst().orElseThrow().sourceContent();
+        String architectureSource = generated.artifacts().stream()
+                .filter(artifact -> artifact.type() == DocumentationArtifactType.ARCHITECTURE)
+                .findFirst().orElseThrow().sourceContent();
+        assertThat(srsSource).contains("| Status | Approved |", "Status: Approved");
+        assertThat(architectureSource).contains("Status: Approved");
+        assertThat(srsSource).doesNotContain("Needs stakeholder review");
     }
 
     @Test
     void styledExportsPersistChoicesAndKeepEachTemplateReadable() throws Exception {
         Fixture fixture = fixture(true);
+        fixture.project().setName("ClinicFlow — Review");
+        projectRepository.save(fixture.project());
         DocumentationDtos.PackageResponse generated = packageService.generate(fixture.project().getId(), fixture.owner().getId(), fixture.srs().getId());
-        assertThat(generated.validation().path("totalWords").asInt()).isGreaterThanOrEqualTo(9_500);
+        assertThat(generated.validation().path("totalWords").asInt()).isGreaterThanOrEqualTo(7_000);
+        assertThat(generated.validation().path("declaredPackageWordTarget").asInt()).isEqualTo(7_000);
+        assertThat(generated.validation().path("generationMode").asText()).isEqualTo("EXHAUSTIVE");
+        assertThat(generated.validation().path("approvalEligible").asBoolean()).isTrue();
+        assertThat(generated.status()).isEqualTo("APPROVED");
+        var canonicalApiRequirement = java.util.stream.StreamSupport.stream(generated.canonicalModel().path("requirements").spliterator(), false)
+                .filter(requirement -> "SRS-API-001".equals(requirement.path("id").asText())).findFirst().orElseThrow();
+        assertThat(canonicalApiRequirement.path("trigger").asText()).isNotBlank();
+        assertThat(canonicalApiRequirement.path("actors")).isNotEmpty();
+        assertThat(canonicalApiRequirement.path("api_path").asText()).isEqualTo("/reminder-outcomes");
+        assertThat(canonicalApiRequirement.path("apiOperationId").asText()).isEqualTo("recordReminderOutcome");
         assertThat(generated.validation().path("narrativeSectionsChecked").asInt()).isEqualTo(12);
         assertThat(generated.validation().path("narrativeWords").asInt()).isGreaterThanOrEqualTo(2_000);
         writePackageSourcesWhenRequested(generated);
@@ -157,6 +172,9 @@ class DocumentationPackageIntegrationTest {
             try (PDDocument pdfDocument = Loader.loadPDF(pdfBytes);
                  XWPFDocument docxDocument = new XWPFDocument(new java.io.ByteArrayInputStream(docxBytes))) {
                 assertThat(pdfDocument.getNumberOfPages()).isPositive();
+                assertThat(pdfDocument.getDocumentInformation().getTitle()).isEqualTo("ClinicFlow — Review documentation package v1");
+                assertThat(pdfDocument.getDocumentCatalog().getDocumentOutline()).isNotNull();
+                assertThat(pdfDocument.getDocumentCatalog().getDocumentOutline().getFirstChild()).isNotNull();
                 assertThat(docxDocument.getParagraphs()).isNotEmpty();
                 String pdfText = new PDFTextStripper().getText(pdfDocument);
                 String docxText = docxDocument.getParagraphs().stream().map(paragraph -> paragraph.getText())
@@ -165,10 +183,37 @@ class DocumentationPackageIntegrationTest {
                                 .flatMap(row -> row.getTableCells().stream()).map(cell -> cell.getText())
                                 .collect(java.util.stream.Collectors.joining("\n"));
                 assertThat(pdfText).contains("Document control", "Field", "Value").doesNotContain("**", "| Field |", "|---");
+                assertThat(pdfText).contains("ClinicFlow - Review").doesNotContain("ClinicFlow ? Review");
+                assertThat(pdfText).contains("Contents", "Page 1", "Page 2");
                 assertThat(docxText).contains("Document control", "Field", "Value").doesNotContain("**", "| Field |", "|---");
-                assertThat(docxDocument.getDocument().xmlText()).contains("TOC \\o", "outlineLvl");
+                assertThat(docxDocument.getProperties().getCoreProperties().getTitle()).isEqualTo("ClinicFlow — Review documentation package v1");
+                String documentXml = docxDocument.getDocument().xmlText();
+                assertThat(documentXml).contains("TOC \\o", "outlineLvl", "w:w=\"9360\"", "w:tblInd", "w:w=\"120\"");
+                java.util.regex.Matcher diagramExtents = java.util.regex.Pattern.compile("<wp:extent[^>]*cx=\"(\\d+)\"").matcher(documentXml);
+                java.util.List<Long> diagramWidths = new java.util.ArrayList<>();
+                while (diagramExtents.find()) diagramWidths.add(Long.parseLong(diagramExtents.group(1)));
+                assertThat(diagramWidths).hasSize(4).allMatch(width -> width >= 5_000_000L);
+                var margins = docxDocument.getDocument().getBody().getSectPr().getPgMar();
+                assertThat(margins.getTop()).isEqualTo(BigInteger.valueOf(1_440));
+                assertThat(margins.getRight()).isEqualTo(BigInteger.valueOf(1_440));
+                assertThat(margins.getBottom()).isEqualTo(BigInteger.valueOf(1_440));
+                assertThat(margins.getLeft()).isEqualTo(BigInteger.valueOf(1_440));
+                assertThat(margins.getHeader()).isEqualTo(BigInteger.valueOf(708));
+                assertThat(margins.getFooter()).isEqualTo(BigInteger.valueOf(708));
+                assertThat(docxDocument.getParagraphs().stream().filter(paragraph -> "System requirements".equals(paragraph.getText())).count()).isEqualTo(1);
+                assertThat(docxDocument.getParagraphs().stream().filter(paragraph -> paragraph.getText().contains("This SRS is"))
+                        .flatMap(paragraph -> paragraph.getRuns().stream()).mapToInt(run -> run.getFontSize()).filter(size -> size == 11).count()).isPositive();
             }
         }
+
+        DocumentationDtos.ExportResponse json = exportService.create(fixture.project().getId(), generated.id(), fixture.owner().getId(), DocumentationExportFormat.OPENAPI_JSON);
+        DocumentationDtos.ExportResponse yaml = exportService.create(fixture.project().getId(), generated.id(), fixture.owner().getId(), DocumentationExportFormat.OPENAPI_YAML);
+        var jsonContract = objectMapper.readTree(exportService.download(fixture.project().getId(), generated.id(), json.id(), fixture.owner().getId()).bytes());
+        var yamlContract = new YAMLMapper().readTree(exportService.download(fixture.project().getId(), generated.id(), yaml.id(), fixture.owner().getId()).bytes());
+        assertThat(jsonContract.path("paths").size()).isEqualTo(1);
+        assertThat(jsonContract.path("paths").path("/reminder-outcomes").path("post").path("operationId").asText()).isEqualTo("recordReminderOutcome");
+        assertThat(jsonContract.path("paths").path("/reminder-outcomes").path("post").path("x-velocira-requirement-id").asText()).isEqualTo("SRS-API-001");
+        assertThat(yamlContract).isEqualTo(jsonContract);
 
         DocumentationExportStyle archiveStyle = new DocumentationExportStyle(DocumentationExportTemplate.TECHNICAL, DocumentationExportTheme.VIOLET, DocumentationExportLayout.COMPACT);
         DocumentationDtos.ExportResponse archive = exportService.create(fixture.project().getId(), generated.id(), fixture.owner().getId(), DocumentationExportFormat.ZIP, archiveStyle);
@@ -222,6 +267,48 @@ class DocumentationPackageIntegrationTest {
     }
 
     @Test
+    void policyPhrasesNeverBecomeEntitiesAndUnsupportedErdIsOmitted() {
+        Fixture fixture = fixture();
+        ObjectNode brief = (ObjectNode) fixture.srs().getBriefSnapshot().deepCopy();
+        brief.put("entities", "Professional Profile, Access only while needed, Availability Slot");
+        fixture.srs().setBriefSnapshot(brief);
+        srsVersionRepository.save(fixture.srs());
+
+        DocumentationDtos.PackageResponse generated = packageService.generate(
+                fixture.project().getId(), fixture.owner().getId(), fixture.srs().getId());
+
+        assertThat(generated.canonicalModel().path("entities").findValuesAsText("name"))
+                .containsExactly("Professional Profile", "Availability Slot")
+                .doesNotContain("Access only while needed");
+        assertThat(generated.artifacts()).extracting(DocumentationDtos.ArtifactResponse::type)
+                .contains(DocumentationArtifactType.DATA_DICTIONARY).doesNotContain(DocumentationArtifactType.ERD);
+        assertThat(generated.canonicalModel().path("documentPlan").toString())
+                .contains("Entity names alone do not justify relationship cardinality");
+    }
+
+    @Test
+    void standardsWhoseOnlyApplicabilitySignalIsExplicitlyExcludedAreRemoved() {
+        Fixture fixture = fixture();
+        ObjectNode content = objectMapper.createObjectNode();
+        content.putArray("exclusions").add("Payments are excluded.").add("AI recommendations are excluded.");
+        var standards = content.putArray("standards_applied");
+        standards.addObject().put("id", "STD-PCI").put("title", "PCI DSS").put("description", "Applicable context signal: payment. Payment controls.");
+        standards.addObject().put("id", "STD-AI").put("title", "AI guidance").put("description", "Applicable context signal: AI. AI governance.");
+        standards.addObject().put("id", "STD-29148").put("title", "ISO/IEC/IEEE 29148").put("description", "Requirements quality and traceability guidance.");
+        fixture.srs().setSrsContent(content);
+        srsVersionRepository.save(fixture.srs());
+
+        DocumentationDtos.PackageResponse generated = packageService.generate(
+                fixture.project().getId(), fixture.owner().getId(), fixture.srs().getId());
+
+        assertThat(generated.canonicalModel().path("standardsApplied").findValuesAsText("title"))
+                .containsExactly("ISO/IEC/IEEE 29148");
+        String srsSource = generated.artifacts().stream().filter(artifact -> artifact.type() == DocumentationArtifactType.SRS)
+                .findFirst().orElseThrow().sourceContent();
+        assertThat(srsSource).contains("ISO/IEC/IEEE 29148").doesNotContain("PCI DSS", "AI guidance");
+    }
+
+    @Test
     void exhaustivePackageRejectsACompactArtifactSetInsteadOfReportingItAsValid() {
         Fixture fixture = fixture();
         ObjectNode compactContent = objectMapper.createObjectNode();
@@ -231,7 +318,7 @@ class DocumentationPackageIntegrationTest {
 
         assertThatThrownBy(() -> packageService.generate(fixture.project().getId(), fixture.owner().getId(), fixture.srs().getId()))
                 .isInstanceOf(com.velocira.backend.documentation.exceptions.DocumentationPackageException.class)
-                .hasMessageContaining("at least 9500 useful words");
+                .hasMessageContaining("does not declare expected_package_word_target");
     }
 
     @Test
@@ -343,7 +430,7 @@ class DocumentationPackageIntegrationTest {
         }
         ObjectNode srsContent = richDocumentationSample ? richSrsContent() : objectMapper.createObjectNode();
         SrsVersionEntity srs = srsVersionRepository.save(SrsVersionEntity.builder().project(project).owner(owner).profile(profile)
-                .versionNumber(1).status(SrsVersionStatus.NEEDS_REVIEW).briefSnapshot(brief).srsContent(srsContent)
+                .versionNumber(1).status(richDocumentationSample ? SrsVersionStatus.APPROVED : SrsVersionStatus.NEEDS_REVIEW).briefSnapshot(brief).srsContent(srsContent)
                 .validationOutcome(objectMapper.createObjectNode().put("valid", true)).citationCoverage(new BigDecimal("100.00"))
                 .provider("deterministic").model("test").promptVersion("test-v1").generatedAt(Instant.now()).approvedAt(Instant.now()).build());
         requirementRepository.save(SrsRequirementEntity.builder().srsVersion(srs).requirementId("SRS-FR-001").requirementType("FUNCTIONAL")
@@ -385,6 +472,7 @@ class DocumentationPackageIntegrationTest {
         content.putArray("stakeholders").add("Patients").add("Receptionists").add("Clinicians").add("Clinic administrators");
         var manifest = content.putObject("generation_manifest");
         manifest.put("mode", "EXHAUSTIVE").put("requested_model", "gemini-3.1-pro-preview").put("actual_model", "gemini-3.1-pro-preview").put("prompt_version", "srs-compiler-v2").put("validation_status", "PASSED");
+        manifest.putObject("long_form_provenance").put("expected_package_word_target", 7_000);
         var sections = content.putArray("narrative_sections");
         String[][] chapterData = {
                 {"INTRODUCTION", "Introduction and document purpose", "Defines the governed product baseline and review conventions."},
@@ -414,14 +502,14 @@ class DocumentationPackageIntegrationTest {
         var risk = content.putArray("risks").addObject();
         risk.put("id", "RISK-001").put("category", "Privacy and safety").put("title", "Unauthorized patient-record access").put("description", "A user may access a patient record outside the user's confirmed authority.").put("status", "CONFIRMED").put("owner", "Clinic product owner").put("source_detail", "Confirmed discovery risk.");
         var decision = content.putArray("decisions").addObject();
-        decision.put("id", "DEC-001").put("category", "Open decision").put("title", "Recovery targets").put("description", "Approve the recovery-time and recovery-point targets after a business-impact review.").put("status", "UNRESOLVED").put("owner", "Clinic product owner").put("source_detail", "Missing governed project decision.");
+        decision.put("id", "DEC-001").put("category", "Decision").put("title", "Recovery targets").put("description", "Recovery targets remain governed by the business-impact review and are not release claims in this package.").put("status", "RESOLVED").put("owner", "Clinic product owner").put("source_detail", "Reviewed package fixture decision.");
         var standards = content.putArray("standards_applied");
         standards.addObject().put("id", "STD-ISO_29148").put("category", "Standards guidance").put("title", "ISO/IEC/IEEE 29148:2018").put("description", "Requirements quality and traceability guidance; no certification claim.").put("status", "RECOMMENDED").put("owner", "Documentation reviewer").put("source_detail", "Official source metadata checked 2026-08-16.");
         standards.addObject().put("id", "STD-ISO_42010").put("category", "Standards guidance").put("title", "ISO/IEC/IEEE 42010:2022").put("description", "Architecture-description guidance; no certification claim.").put("status", "RECOMMENDED").put("owner", "Architecture reviewer").put("source_detail", "Official source metadata checked 2026-08-16.");
         var diagrams = content.putArray("diagrams");
         diagrams.addObject().put("id", "DGM-001").put("type", "C4_CONTEXT").put("title", "ClinicFlow system context").put("notation", "MERMAID").put("source", "flowchart LR\n  PATIENT[\"Patient\"] --> SYSTEM[\"ClinicFlow\"]\n  RECEPTION[\"Receptionist\"] --> SYSTEM\n  CLINICIAN[\"Clinician\"] --> SYSTEM\n  SYSTEM --> SMS[\"SMS provider\"]").put("rationale", "Shows confirmed actors and the SMS dependency.").put("status", "DERIVED");
         diagrams.addObject().put("id", "DGM-002").put("type", "WORKFLOW").put("title", "Clinic workflow").put("notation", "MERMAID").put("source", "flowchart TD\n  REGISTER[\"Identify or register patient\"] --> SLOT[\"Select available slot\"]\n  SLOT --> BOOK[\"Confirm appointment\"]\n  BOOK --> VISIT[\"Record visit\"]\n  VISIT --> FOLLOWUP[\"Provide follow-up\"]").put("rationale", "Shows the confirmed success path.").put("status", "DERIVED");
-        diagrams.addObject().put("id", "DGM-003").put("type", "ERD").put("title", "Conceptual data model").put("notation", "MERMAID").put("source", "erDiagram\n  PATIENT {\n    uuid id PK\n  }\n  APPOINTMENT {\n    uuid id PK\n  }\n  VISIT {\n    uuid id PK\n  }").put("rationale", "Lists confirmed entities without unsupported fields or relationships.").put("status", "DERIVED");
+        diagrams.addObject().put("id", "DGM-003").put("type", "ERD").put("title", "Conceptual data model").put("notation", "MERMAID").put("source", "erDiagram\n  PATIENT {\n    uuid id PK\n  }\n  APPOINTMENT {\n    uuid id PK\n  }\n  VISIT {\n    uuid id PK\n  }\n  PATIENT ||--o{ APPOINTMENT : has\n  PATIENT ||--o{ VISIT : has").put("rationale", "Shows only relationships stated in the canonical data requirement and narrative.").put("status", "DERIVED");
         var requirementDetails = content.putArray("requirements");
         for (String[] detail : new String[][] {
                 {"SRS-FR-001", "Create an appointment", "FUNCTIONAL"}, {"SRS-FR-002", "Prevent overlapping appointments", "FUNCTIONAL"},
@@ -437,6 +525,10 @@ class DocumentationPackageIntegrationTest {
                     .put("failure_behavior", "The system preserves the prior safe state, records a reviewable failure, and does not claim success.");
             item.putArray("actors").add("Authorized clinic user"); item.putArray("preconditions").add("The actor is authenticated and authorized.");
             item.putArray("data_involved").add("Applicable confirmed clinic record"); item.putArray("dependencies"); item.putArray("risks");
+            if ("SRS-API-001".equals(detail[0])) {
+                item.put("api_path", "/reminder-outcomes").put("http_method", "post").put("operation_id", "recordReminderOutcome")
+                        .put("source_detail", "Confirmed HTTP contract: POST /reminder-outcomes uses operation ID recordReminderOutcome.");
+            }
         }
         return content;
     }
