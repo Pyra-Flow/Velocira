@@ -12,12 +12,16 @@ import com.velocira.backend.documentation.model.DocumentationExportTemplate;
 import com.velocira.backend.documentation.model.DocumentationExportTheme;
 import com.velocira.backend.documentation.model.DocumentationPackageEntity;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDDocumentInformation;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
+import org.apache.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitWidthDestination;
+import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline;
+import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.apache.poi.util.Units;
 import org.apache.poi.wp.usermodel.HeaderFooterType;
@@ -53,7 +57,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
@@ -100,7 +106,8 @@ public class DocumentationExportRenderer {
                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document", docx(snapshot, style));
                 case OPENAPI_JSON -> sourceExport(projectSlug, snapshot, DocumentationArtifactType.OPENAPI, ".openapi.json", "application/vnd.oai.openapi+json;version=3.1");
                 case OPENAPI_YAML -> new RenderedExport(projectSlug + "-v" + snapshot.versionNumber() + ".openapi.yaml",
-                        "application/yaml; charset=utf-8", openApiYaml(snapshot.artifact(DocumentationArtifactType.OPENAPI)).getBytes(StandardCharsets.UTF_8));
+                        "application/yaml; charset=utf-8", requireArtifact(snapshot, DocumentationArtifactType.OPENAPI,
+                        openApiYaml(snapshot.artifact(DocumentationArtifactType.OPENAPI)).getBytes(StandardCharsets.UTF_8)));
                 case UML_SOURCE -> sourceExport(projectSlug, snapshot, DocumentationArtifactType.USE_CASES, ".use-cases.puml", "text/plain; charset=utf-8");
                 case ERD_SOURCE -> sourceExport(projectSlug, snapshot, DocumentationArtifactType.ERD, ".erd.mmd", "text/plain; charset=utf-8");
             };
@@ -122,20 +129,26 @@ public class DocumentationExportRenderer {
         Theme theme = Theme.from(style.theme());
         return switch (artifactType) {
             case USE_CASES -> new RenderedExport("use-case-map.svg", "image/svg+xml; charset=utf-8",
-                    useCaseSvg(snapshot.canonicalModel(), theme, style.template()).getBytes(StandardCharsets.UTF_8));
+                    requireArtifact(snapshot, artifactType, useCaseSvg(snapshot.canonicalModel(), theme, style.template()).getBytes(StandardCharsets.UTF_8)));
             case C4_CONTEXT -> new RenderedExport("c4-system-context.svg", "image/svg+xml; charset=utf-8",
-                    contextSvg(snapshot.canonicalModel(), theme).getBytes(StandardCharsets.UTF_8));
+                    requireArtifact(snapshot, artifactType, contextSvg(snapshot.canonicalModel(), theme).getBytes(StandardCharsets.UTF_8)));
             case WORKFLOWS -> new RenderedExport("primary-workflow.svg", "image/svg+xml; charset=utf-8",
-                    workflowSvg(snapshot.canonicalModel(), theme).getBytes(StandardCharsets.UTF_8));
+                    requireArtifact(snapshot, artifactType, workflowSvg(snapshot.canonicalModel(), theme).getBytes(StandardCharsets.UTF_8)));
             case ERD -> new RenderedExport("entity-relationship-diagram.svg", "image/svg+xml; charset=utf-8",
-                    erdSvg(snapshot.canonicalModel(), theme, style.template()).getBytes(StandardCharsets.UTF_8));
+                    requireArtifact(snapshot, artifactType, erdSvg(snapshot.canonicalModel(), theme, style.template()).getBytes(StandardCharsets.UTF_8)));
             default -> new RenderedExport(artifactType.name().toLowerCase(Locale.ROOT) + ".md", "text/markdown; charset=utf-8",
-                    snapshot.artifact(artifactType).sourceContent().getBytes(StandardCharsets.UTF_8));
+                    requireArtifact(snapshot, artifactType, snapshot.artifact(artifactType).sourceContent().getBytes(StandardCharsets.UTF_8)));
         };
+    }
+
+    private byte[] requireArtifact(PackageSnapshot snapshot, DocumentationArtifactType type, byte[] bytes) {
+        if (!snapshot.hasArtifact(type)) throw new IllegalArgumentException(type + " was omitted from this package: " + snapshot.omissionReason(type));
+        return bytes;
     }
 
     private RenderedExport sourceExport(String projectSlug, PackageSnapshot snapshot, DocumentationArtifactType type,
                                         String extension, String contentType) {
+        if (!snapshot.hasArtifact(type)) throw new IllegalArgumentException(type + " was omitted from this package: " + snapshot.omissionReason(type));
         return new RenderedExport(projectSlug + "-v" + snapshot.versionNumber() + extension, contentType,
                 snapshot.artifact(type).sourceContent().getBytes(StandardCharsets.UTF_8));
     }
@@ -148,22 +161,33 @@ public class DocumentationExportRenderer {
                 if (type == DocumentationArtifactType.OPENAPI || type == DocumentationArtifactType.USE_CASES
                         || type == DocumentationArtifactType.C4_CONTEXT || type == DocumentationArtifactType.WORKFLOWS
                         || type == DocumentationArtifactType.ERD) continue;
+                if (!snapshot.hasArtifact(type)) continue;
                 put(zip, "documents/" + type.name().toLowerCase(Locale.ROOT).replace('_', '-') + ".md", snapshot.artifact(type).sourceContent());
             }
-            put(zip, "srs.md", snapshot.artifact(DocumentationArtifactType.SRS).sourceContent());
-            put(zip, "use-cases.md", snapshot.artifact(DocumentationArtifactType.USE_CASES).content());
-            put(zip, "diagrams/use-cases.puml", snapshot.artifact(DocumentationArtifactType.USE_CASES).sourceContent());
-            put(zip, "diagrams/use-cases.svg", useCaseSvg(snapshot.canonicalModel(), theme, style.template()));
-            put(zip, "diagrams/c4-context.mmd", snapshot.artifact(DocumentationArtifactType.C4_CONTEXT).sourceContent());
-            put(zip, "diagrams/c4-context.svg", contextSvg(snapshot.canonicalModel(), theme));
-            put(zip, "diagrams/workflow.mmd", snapshot.artifact(DocumentationArtifactType.WORKFLOWS).sourceContent());
-            put(zip, "diagrams/workflow.svg", workflowSvg(snapshot.canonicalModel(), theme));
-            put(zip, "erd.md", snapshot.artifact(DocumentationArtifactType.ERD).content());
-            put(zip, "diagrams/erd.mmd", snapshot.artifact(DocumentationArtifactType.ERD).sourceContent());
-            put(zip, "diagrams/erd.svg", erdSvg(snapshot.canonicalModel(), theme, style.template()));
-            put(zip, "openapi.json", snapshot.artifact(DocumentationArtifactType.OPENAPI).sourceContent());
-            put(zip, "openapi.yaml", openApiYaml(snapshot.artifact(DocumentationArtifactType.OPENAPI)));
-            put(zip, "traceability.md", snapshot.artifact(DocumentationArtifactType.TRACEABILITY).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.SRS)) put(zip, "srs.md", snapshot.artifact(DocumentationArtifactType.SRS).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.USE_CASES)) {
+                put(zip, "use-cases.md", snapshot.artifact(DocumentationArtifactType.USE_CASES).content());
+                put(zip, "diagrams/use-cases.puml", snapshot.artifact(DocumentationArtifactType.USE_CASES).sourceContent());
+                put(zip, "diagrams/use-cases.svg", useCaseSvg(snapshot.canonicalModel(), theme, style.template()));
+            }
+            if (snapshot.hasArtifact(DocumentationArtifactType.C4_CONTEXT)) {
+                put(zip, "diagrams/c4-context.mmd", snapshot.artifact(DocumentationArtifactType.C4_CONTEXT).sourceContent());
+                put(zip, "diagrams/c4-context.svg", contextSvg(snapshot.canonicalModel(), theme));
+            }
+            if (snapshot.hasArtifact(DocumentationArtifactType.WORKFLOWS)) {
+                put(zip, "diagrams/workflow.mmd", snapshot.artifact(DocumentationArtifactType.WORKFLOWS).sourceContent());
+                put(zip, "diagrams/workflow.svg", workflowSvg(snapshot.canonicalModel(), theme));
+            }
+            if (snapshot.hasArtifact(DocumentationArtifactType.ERD)) {
+                put(zip, "erd.md", snapshot.artifact(DocumentationArtifactType.ERD).content());
+                put(zip, "diagrams/erd.mmd", snapshot.artifact(DocumentationArtifactType.ERD).sourceContent());
+                put(zip, "diagrams/erd.svg", erdSvg(snapshot.canonicalModel(), theme, style.template()));
+            }
+            if (snapshot.hasArtifact(DocumentationArtifactType.OPENAPI)) {
+                put(zip, "openapi.json", snapshot.artifact(DocumentationArtifactType.OPENAPI).sourceContent());
+                put(zip, "openapi.yaml", openApiYaml(snapshot.artifact(DocumentationArtifactType.OPENAPI)));
+            }
+            if (snapshot.hasArtifact(DocumentationArtifactType.TRACEABILITY)) put(zip, "traceability.md", snapshot.artifact(DocumentationArtifactType.TRACEABILITY).sourceContent());
             put(zip, "canonical-model.json", snapshot.canonicalModel().toPrettyString());
             put(zip, "validation.json", snapshot.validation().toPrettyString());
             put(zip, "documentation-package.docx", docx(snapshot, style));
@@ -174,18 +198,23 @@ public class DocumentationExportRenderer {
     }
 
     private String readme(PackageSnapshot snapshot, DocumentationExportStyle style) {
-        return "# " + snapshot.projectName() + " documentation package\n\n"
-                + "Package v" + snapshot.versionNumber() + " is generated from SRS v" + snapshot.srsVersionNumber() + ".\n\n"
-                + "## Presentation\n\n"
-                + "- Template: " + style.template() + "\n"
-                + "- Theme: " + style.theme() + "\n"
-                + "- Layout: " + style.layout() + "\n\n"
-                + "## Included files\n\n"
-                + "- `documentation-package.pdf` - styled, print-ready package with visual diagrams.\n"
-                + "- `documentation-package.docx` - editable Word package with the same visual system.\n"
-                + "- `diagrams/*.svg` - themed visual diagrams; `.mmd` and `.puml` remain faithful source files.\n"
-                + "- `documents/*.md` - business, architecture, data, security, testing, deployment, operations, user, risk, and traceability sources.\n"
-                + "- `openapi.*`, `srs.md`, and `use-cases.md` - machine-readable and human-readable source deliverables.\n";
+        StringBuilder readme = new StringBuilder("# ").append(snapshot.projectName()).append(" documentation package\n\n")
+                .append("Package v").append(snapshot.versionNumber()).append(" is generated from SRS v").append(snapshot.srsVersionNumber()).append(".\n\n")
+                .append("## Presentation\n\n")
+                .append("- Template: ").append(style.template()).append("\n")
+                .append("- Theme: ").append(style.theme()).append("\n")
+                .append("- Layout: ").append(style.layout()).append("\n\n")
+                .append("## Included files\n\n")
+                .append("- `documentation-package.pdf` - styled, print-ready package with visual diagrams.\n")
+                .append("- `documentation-package.docx` - editable Word package with the same visual system.\n")
+                .append("- `diagrams/*.svg` - themed visual diagrams; `.mmd` and `.puml` remain faithful source files.\n")
+                .append("- `documents/*.md` - emitted human-readable source deliverables.\n\n")
+                .append("## Artifact disposition\n\n");
+        for (JsonNode item : snapshot.canonicalModel().path("documentPlan")) {
+            readme.append("- **").append(item.path("artifactType").asText()).append(" — ")
+                    .append(item.path("status").asText()).append(":** ").append(item.path("reason").asText()).append("\n");
+        }
+        return readme.toString();
     }
 
     private void put(ZipOutputStream zip, String name, String content) throws IOException {
@@ -200,27 +229,38 @@ public class DocumentationExportRenderer {
 
     private byte[] pdf(PackageSnapshot snapshot, DocumentationExportStyle style) throws IOException {
         try (PDDocument document = new PDDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            PDDocumentInformation information = new PDDocumentInformation();
+            information.setTitle(snapshot.projectName() + " documentation package v" + snapshot.versionNumber());
+            information.setAuthor("Velocira");
+            information.setSubject("Canonical SRS documentation package and validation evidence");
+            information.setCreator("Velocira documentation compiler");
+            information.setKeywords("SRS, traceability, documentation, canonical source");
+            document.setDocumentInformation(information);
             PdfComposer composer = new PdfComposer(document, snapshot, style);
             composer.cover();
             composer.contents();
-            composer.section("System requirements", snapshot.artifact(DocumentationArtifactType.SRS).sourceContent());
-            composer.section("Business requirements", snapshot.artifact(DocumentationArtifactType.BRD).sourceContent());
-            composer.section("Architecture description", snapshot.artifact(DocumentationArtifactType.ARCHITECTURE).sourceContent());
-            composer.diagram("C4 system context", diagramPng(snapshot.canonicalModel(), DiagramKind.CONTEXT, style));
-            composer.diagram("Use case map", diagramPng(snapshot.canonicalModel(), DiagramKind.USE_CASES, style));
-            composer.section("Use cases", snapshot.artifact(DocumentationArtifactType.USE_CASES).content());
-            composer.diagram("Primary workflow", diagramPng(snapshot.canonicalModel(), DiagramKind.WORKFLOW, style));
-            composer.section("Workflow and recovery", snapshot.artifact(DocumentationArtifactType.WORKFLOWS).content());
-            composer.diagram("Entity relationship diagram", diagramPng(snapshot.canonicalModel(), DiagramKind.ERD, style));
-            composer.section("Data dictionary", snapshot.artifact(DocumentationArtifactType.DATA_DICTIONARY).sourceContent());
-            composer.section("Security and privacy", snapshot.artifact(DocumentationArtifactType.SECURITY).sourceContent());
-            composer.section("Verification and testing", snapshot.artifact(DocumentationArtifactType.TEST_PLAN).sourceContent());
-            composer.section("Deployment", snapshot.artifact(DocumentationArtifactType.DEPLOYMENT).sourceContent());
-            composer.section("Operations", snapshot.artifact(DocumentationArtifactType.OPERATIONS).sourceContent());
-            composer.section("User manual", snapshot.artifact(DocumentationArtifactType.USER_MANUAL).sourceContent());
-            composer.section("Risk and decision register", snapshot.artifact(DocumentationArtifactType.RISK_REGISTER).sourceContent());
-            composer.traceability(snapshot.canonicalModel());
-            composer.openApi(snapshot.artifact(DocumentationArtifactType.OPENAPI).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.SRS)) composer.section("System requirements", snapshot.artifact(DocumentationArtifactType.SRS).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.BRD)) composer.section("Business requirements", snapshot.artifact(DocumentationArtifactType.BRD).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.ARCHITECTURE)) composer.section("Architecture description", snapshot.artifact(DocumentationArtifactType.ARCHITECTURE).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.C4_CONTEXT)) composer.diagram("C4 system context", diagramPng(snapshot.canonicalModel(), DiagramKind.CONTEXT, style));
+            if (snapshot.hasArtifact(DocumentationArtifactType.USE_CASES)) {
+                composer.diagram("Use case map", diagramPng(snapshot.canonicalModel(), DiagramKind.USE_CASES, style));
+                composer.section("Use cases", snapshot.artifact(DocumentationArtifactType.USE_CASES).content());
+            }
+            if (snapshot.hasArtifact(DocumentationArtifactType.WORKFLOWS)) {
+                composer.diagram("Primary workflow", diagramPng(snapshot.canonicalModel(), DiagramKind.WORKFLOW, style));
+                composer.section("Workflow and recovery", snapshot.artifact(DocumentationArtifactType.WORKFLOWS).content());
+            }
+            if (snapshot.hasArtifact(DocumentationArtifactType.ERD)) composer.diagram("Entity relationship diagram", diagramPng(snapshot.canonicalModel(), DiagramKind.ERD, style));
+            if (snapshot.hasArtifact(DocumentationArtifactType.DATA_DICTIONARY)) composer.section("Data dictionary", snapshot.artifact(DocumentationArtifactType.DATA_DICTIONARY).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.SECURITY)) composer.section("Security and privacy", snapshot.artifact(DocumentationArtifactType.SECURITY).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.TEST_PLAN)) composer.section("Verification and testing", snapshot.artifact(DocumentationArtifactType.TEST_PLAN).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.DEPLOYMENT)) composer.section("Deployment", snapshot.artifact(DocumentationArtifactType.DEPLOYMENT).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.OPERATIONS)) composer.section("Operations", snapshot.artifact(DocumentationArtifactType.OPERATIONS).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.USER_MANUAL)) composer.section("User manual", snapshot.artifact(DocumentationArtifactType.USER_MANUAL).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.RISK_REGISTER)) composer.section("Risk and decision register", snapshot.artifact(DocumentationArtifactType.RISK_REGISTER).sourceContent());
+            if (snapshot.hasArtifact(DocumentationArtifactType.TRACEABILITY)) composer.traceability(snapshot.canonicalModel());
+            if (snapshot.hasArtifact(DocumentationArtifactType.OPENAPI)) composer.openApi(snapshot.artifact(DocumentationArtifactType.OPENAPI).sourceContent());
             composer.close();
             document.save(output);
             return output.toByteArray();
@@ -233,27 +273,35 @@ public class DocumentationExportRenderer {
         try (XWPFDocument document = new XWPFDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             configurePage(document);
             document.enforceUpdateFields();
+            document.getProperties().getCoreProperties().setTitle(snapshot.projectName() + " documentation package v" + snapshot.versionNumber());
+            document.getProperties().getCoreProperties().setCreator("Velocira");
+            document.getProperties().getCoreProperties().setSubjectProperty("Canonical SRS documentation package and validation evidence");
+            document.getProperties().getCoreProperties().setDescription("Generated from one immutable canonical SRS snapshot; omissions and material gaps are recorded in the package validation.");
             configureDocxFurniture(document, snapshot, style, theme);
             addDocxCover(document, snapshot, style, theme, template);
             addDocxContents(document, snapshot, theme);
-            addDocxSection(document, "System requirements", snapshot.artifact(DocumentationArtifactType.SRS).sourceContent(), style, theme);
-            addDocxSection(document, "Business requirements", snapshot.artifact(DocumentationArtifactType.BRD).sourceContent(), style, theme);
-            addDocxSection(document, "Architecture description", snapshot.artifact(DocumentationArtifactType.ARCHITECTURE).sourceContent(), style, theme);
-            addDocxDiagram(document, "C4 system context", diagramPng(snapshot.canonicalModel(), DiagramKind.CONTEXT, style), theme);
-            addDocxDiagram(document, "Use case map", diagramPng(snapshot.canonicalModel(), DiagramKind.USE_CASES, style), theme);
-            addDocxSection(document, "Use cases", snapshot.artifact(DocumentationArtifactType.USE_CASES).content(), style, theme);
-            addDocxDiagram(document, "Primary workflow", diagramPng(snapshot.canonicalModel(), DiagramKind.WORKFLOW, style), theme);
-            addDocxSection(document, "Workflow and recovery", snapshot.artifact(DocumentationArtifactType.WORKFLOWS).content(), style, theme);
-            addDocxDiagram(document, "Entity relationship diagram", diagramPng(snapshot.canonicalModel(), DiagramKind.ERD, style), theme);
-            addDocxSection(document, "Data dictionary", snapshot.artifact(DocumentationArtifactType.DATA_DICTIONARY).sourceContent(), style, theme);
-            addDocxSection(document, "Security and privacy", snapshot.artifact(DocumentationArtifactType.SECURITY).sourceContent(), style, theme);
-            addDocxSection(document, "Verification and testing", snapshot.artifact(DocumentationArtifactType.TEST_PLAN).sourceContent(), style, theme);
-            addDocxSection(document, "Deployment", snapshot.artifact(DocumentationArtifactType.DEPLOYMENT).sourceContent(), style, theme);
-            addDocxSection(document, "Operations", snapshot.artifact(DocumentationArtifactType.OPERATIONS).sourceContent(), style, theme);
-            addDocxSection(document, "User manual", snapshot.artifact(DocumentationArtifactType.USER_MANUAL).sourceContent(), style, theme);
-            addDocxSection(document, "Risk and decision register", snapshot.artifact(DocumentationArtifactType.RISK_REGISTER).sourceContent(), style, theme);
-            addDocxTraceability(document, snapshot.canonicalModel(), theme);
-            addDocxOpenApi(document, snapshot.artifact(DocumentationArtifactType.OPENAPI).sourceContent(), theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.SRS)) addDocxSection(document, "System requirements", snapshot.artifact(DocumentationArtifactType.SRS).sourceContent(), style, theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.BRD)) addDocxSection(document, "Business requirements", snapshot.artifact(DocumentationArtifactType.BRD).sourceContent(), style, theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.ARCHITECTURE)) addDocxSection(document, "Architecture description", snapshot.artifact(DocumentationArtifactType.ARCHITECTURE).sourceContent(), style, theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.C4_CONTEXT)) addDocxDiagram(document, "C4 system context", diagramPng(snapshot.canonicalModel(), DiagramKind.CONTEXT, style), theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.USE_CASES)) {
+                addDocxDiagram(document, "Use case map", diagramPng(snapshot.canonicalModel(), DiagramKind.USE_CASES, style), theme);
+                addDocxSection(document, "Use cases", snapshot.artifact(DocumentationArtifactType.USE_CASES).content(), style, theme);
+            }
+            if (snapshot.hasArtifact(DocumentationArtifactType.WORKFLOWS)) {
+                addDocxDiagram(document, "Primary workflow", diagramPng(snapshot.canonicalModel(), DiagramKind.WORKFLOW, style), theme);
+                addDocxSection(document, "Workflow and recovery", snapshot.artifact(DocumentationArtifactType.WORKFLOWS).content(), style, theme);
+            }
+            if (snapshot.hasArtifact(DocumentationArtifactType.ERD)) addDocxDiagram(document, "Entity relationship diagram", diagramPng(snapshot.canonicalModel(), DiagramKind.ERD, style), theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.DATA_DICTIONARY)) addDocxSection(document, "Data dictionary", snapshot.artifact(DocumentationArtifactType.DATA_DICTIONARY).sourceContent(), style, theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.SECURITY)) addDocxSection(document, "Security and privacy", snapshot.artifact(DocumentationArtifactType.SECURITY).sourceContent(), style, theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.TEST_PLAN)) addDocxSection(document, "Verification and testing", snapshot.artifact(DocumentationArtifactType.TEST_PLAN).sourceContent(), style, theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.DEPLOYMENT)) addDocxSection(document, "Deployment", snapshot.artifact(DocumentationArtifactType.DEPLOYMENT).sourceContent(), style, theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.OPERATIONS)) addDocxSection(document, "Operations", snapshot.artifact(DocumentationArtifactType.OPERATIONS).sourceContent(), style, theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.USER_MANUAL)) addDocxSection(document, "User manual", snapshot.artifact(DocumentationArtifactType.USER_MANUAL).sourceContent(), style, theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.RISK_REGISTER)) addDocxSection(document, "Risk and decision register", snapshot.artifact(DocumentationArtifactType.RISK_REGISTER).sourceContent(), style, theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.TRACEABILITY)) addDocxTraceability(document, snapshot.canonicalModel(), theme);
+            if (snapshot.hasArtifact(DocumentationArtifactType.OPENAPI)) addDocxOpenApi(document, snapshot.artifact(DocumentationArtifactType.OPENAPI).sourceContent(), theme);
             document.write(output);
             return output.toByteArray();
         }
@@ -271,8 +319,8 @@ public class DocumentationExportRenderer {
         margins.setRight(BigInteger.valueOf(1_440));
         margins.setBottom(BigInteger.valueOf(1_440));
         margins.setLeft(BigInteger.valueOf(1_440));
-        margins.setHeader(BigInteger.valueOf(710));
-        margins.setFooter(BigInteger.valueOf(710));
+        margins.setHeader(BigInteger.valueOf(708));
+        margins.setFooter(BigInteger.valueOf(708));
         margins.setGutter(BigInteger.ZERO);
     }
 
@@ -308,31 +356,30 @@ public class DocumentationExportRenderer {
     }
 
     private void addDocxCover(XWPFDocument document, PackageSnapshot snapshot, DocumentationExportStyle style, Theme theme, TemplateSpec template) {
-        int spacing = style.layout() == DocumentationExportLayout.PRESENTATION ? 1200 : style.layout() == DocumentationExportLayout.COMPACT ? 240 : 640;
-        XWPFParagraph spacer = document.createParagraph();
-        spacer.setSpacingAfter(spacing);
-        addDocxBand(document, "VELOCIRA  |  DOCUMENTATION PACKAGE", theme.primaryHex());
-
+        addDocxBand(document, "VELOCIRA  |  DOCUMENTATION MEMO", theme.primaryHex());
         XWPFParagraph title = document.createParagraph();
-        title.setSpacingAfter(160);
-        addDocxText(title, snapshot.projectName(), style.layout() == DocumentationExportLayout.PRESENTATION ? 30 : 26, theme.inkHex(), true);
+        title.setSpacingBefore(120);
+        title.setSpacingAfter(60);
+        addDocxText(title, snapshot.projectName(), 20, theme.inkHex(), true);
         XWPFParagraph subtitle = document.createParagraph();
-        subtitle.setSpacingAfter(380);
-        addDocxText(subtitle, template.coverline(), 14, theme.mutedHex(), false);
+        subtitle.setSpacingAfter(180);
+        addDocxText(subtitle, "Software delivery documentation brief", 13, theme.mutedHex(), false);
 
-        XWPFTable metadata = document.createTable(4, 2);
+        XWPFTable metadata = document.createTable(5, 2);
         metadata.setWidth("9360");
-        addMetadataRow(metadata.getRow(0), "Package", "v" + snapshot.versionNumber(), theme);
-        addMetadataRow(metadata.getRow(1), "Source SRS", "v" + snapshot.srsVersionNumber(), theme);
-        addMetadataRow(metadata.getRow(2), "Presentation", style.template() + " / " + style.theme() + " / " + style.layout(), theme);
-        addMetadataRow(metadata.getRow(3), "Purpose", template.callout(), theme);
+        addMetadataRow(metadata.getRow(0), "Subject", "Documentation package v" + snapshot.versionNumber(), theme);
+        addMetadataRow(metadata.getRow(1), "Canonical source", "SRS v" + snapshot.srsVersionNumber(), theme);
+        addMetadataRow(metadata.getRow(2), "Generation mode", snapshot.generationMode(), theme);
+        addMetadataRow(metadata.getRow(3), "Validation", snapshot.validationLabel(), theme);
+        addMetadataRow(metadata.getRow(4), "Format", "standard_business_brief / memo_masthead", theme);
         configureDocxTable(metadata, 1760, 7600);
 
-        XWPFTable callout = document.createTable(1, 1);
-        callout.setWidth("9360");
-        callout.getRow(0).getCell(0).setColor(theme.softHex());
-        setDocxCell(callout.getRow(0).getCell(0), "REVIEW PACKAGE  |  This package keeps requirements, diagrams, APIs, and traceability connected to the same reviewed project snapshot.", 10, theme.inkHex(), false);
-        configureDocxTable(callout, 9360);
+        XWPFParagraph purpose = document.createParagraph();
+        purpose.setSpacingBefore(160);
+        purpose.setSpacingAfter(80);
+        purpose.setSpacingBetween(1.10);
+        addDocxText(purpose, "Purpose: ", 11, theme.inkHex(), true);
+        addDocxText(purpose, "Provide one reviewable hand-off whose emitted artifacts, omissions, diagrams, contracts, and trace links all resolve to the same canonical SRS snapshot.", 11, theme.inkHex(), false);
         document.createParagraph().createRun().addBreak(BreakType.PAGE);
     }
 
@@ -370,36 +417,26 @@ public class DocumentationExportRenderer {
         instruction.getCTR().addNewInstrText().setStringValue(" TOC \\o \"1-3\" \\h \\z \\u ");
         XWPFRun separate = liveToc.createRun();
         separate.getCTR().addNewFldChar().setFldCharType(STFldCharType.SEPARATE);
-        addDocxText(liveToc, "Automatic contents: update fields when opening this document.", 8, theme.mutedHex(), false);
+        addDocxText(liveToc, "Update fields when opening this document to refresh page numbers and hyperlinks.", 10, theme.mutedHex(), false);
         XWPFRun end = liveToc.createRun();
         end.getCTR().addNewFldChar().setFldCharType(STFldCharType.END);
-        String[] sections = {
-                "01  Software requirements", "02  Business requirements", "03  Architecture description",
-                "04  C4 system context", "05  Use case map", "06  Use cases", "07  Primary workflow",
-                "08  Workflow and recovery", "09  Entity relationship diagram", "10  Data dictionary",
-                "11  Security and privacy", "12  Verification and testing", "13  Deployment",
-                "14  Operations", "15  User manual", "16  Risk and decision register",
-                "17  Traceability", "18  OpenAPI contract"};
-        for (String section : sections) {
-            XWPFParagraph item = document.createParagraph();
-            item.setSpacingAfter(70);
-            addDocxText(item, section, 10, theme.inkHex(), false);
-        }
         XWPFParagraph callout = document.createParagraph();
-        callout.setSpacingBefore(160);
-        addDocxText(callout, "Review signal: " + snapshot.validation().path("valid").asBoolean(false), 10, theme.primaryHex(), true);
+        callout.setSpacingBefore(100);
+        addDocxText(callout, "Package validation: " + snapshot.validationLabel(), 11, theme.primaryHex(), true);
+        addDocxPageBreak(document);
     }
 
     private void addDocxSection(XWPFDocument document, String title, String markdown, DocumentationExportStyle style, Theme theme) {
-        addDocxPageBreak(document);
         addDocxBand(document, title.toUpperCase(Locale.ROOT), theme.primaryHex());
         XWPFParagraph heading = document.createParagraph();
-        heading.setSpacingBefore(style.layout() == DocumentationExportLayout.PRESENTATION ? 280 : 180);
-        heading.setSpacingAfter(140);
+        heading.setSpacingBefore(180);
+        heading.setSpacingAfter(90);
+        heading.setKeepNext(true);
         setDocxOutlineLevel(heading, 0);
-        addDocxText(heading, title, 17, theme.primaryHex(), true);
+        addDocxText(heading, title, 16, theme.primaryHex(), true);
 
         boolean code = false;
+        boolean skippedArtifactTitle = false;
         String[] lines = markdown.split("\\r?\\n");
         for (int index = 0; index < lines.length; index++) {
             String raw = lines[index];
@@ -423,17 +460,23 @@ public class DocumentationExportRenderer {
             int level = headingLevel(line);
             String text = level > 0 ? line.substring(level + 1).trim() : stripMarkdownQuote(line);
             if (text.isBlank()) continue;
+            if (level == 1 && !skippedArtifactTitle) {
+                skippedArtifactTitle = true;
+                continue;
+            }
             XWPFParagraph paragraph = document.createParagraph();
-            paragraph.setSpacingAfter(code ? 20 : style.layout() == DocumentationExportLayout.COMPACT ? 50 : 80);
+            paragraph.setSpacingAfter(code ? 20 : 70);
+            paragraph.setSpacingBetween(1.10);
             if (level > 0) {
                 setDocxOutlineLevel(paragraph, Math.min(2, level));
-                addDocxMarkdownText(paragraph, text, level == 1 ? 14 : level == 2 ? 12 : 11, level == 1 ? theme.primaryHex() : theme.inkHex(), true);
+                paragraph.setKeepNext(true);
+                addDocxMarkdownText(paragraph, text, level == 1 ? 16 : level == 2 ? 13 : 12, level == 1 ? theme.primaryHex() : theme.inkHex(), true);
             } else if (line.startsWith("- ") || line.startsWith("  - ")) {
-                addDocxMarkdownText(paragraph, "- " + cleanMarkdownInline(line.replaceFirst("^\\s*-\\s+", "")), 10, theme.inkHex(), false);
+                addDocxMarkdownText(paragraph, "- " + cleanMarkdownInline(line.replaceFirst("^\\s*-\\s+", "")), 11, theme.inkHex(), false);
             } else if (code) {
-                addDocxText(paragraph, text, 8, theme.mutedHex(), false);
+                addDocxText(paragraph, text, 10, theme.mutedHex(), false);
             } else {
-                addDocxMarkdownText(paragraph, text, 10, theme.inkHex(), false);
+                addDocxMarkdownText(paragraph, text, 11, theme.inkHex(), false);
             }
         }
     }
@@ -441,22 +484,40 @@ public class DocumentationExportRenderer {
     private void addDocxMarkdownTable(XWPFDocument document, List<List<String>> rows, Theme theme) {
         if (rows.isEmpty() || rows.get(0).isEmpty()) return;
         int columns = rows.stream().mapToInt(List::size).max().orElse(1);
-        int[] widths = new int[columns];
-        int baseWidth = 9360 / columns;
-        for (int index = 0; index < columns; index++) widths[index] = index == columns - 1 ? 9360 - baseWidth * index : baseWidth;
+        int[] widths = docxColumnWidths(rows, columns);
         XWPFTable table = document.createTable(1, columns);
         for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
             org.apache.poi.xwpf.usermodel.XWPFTableRow row = rowIndex == 0 ? table.getRow(0) : table.createRow();
             for (int column = 0; column < columns; column++) {
                 String value = column < rows.get(rowIndex).size() ? rows.get(rowIndex).get(column) : "";
                 row.getCell(column).setColor(rowIndex == 0 ? "E7EBEF" : "FFFFFF");
-                setDocxCell(row.getCell(column), cleanMarkdownInline(value), rowIndex == 0 ? 7 : 8,
+                setDocxCell(row.getCell(column), cleanMarkdownInline(value), rowIndex == 0 ? 10 : 10,
                         rowIndex == 0 ? theme.mutedHex() : theme.inkHex(), rowIndex == 0);
             }
         }
         table.getRow(0).setRepeatHeader(true);
         configureDocxTable(table, widths);
         document.createParagraph().setSpacingAfter(60);
+    }
+
+    private int[] docxColumnWidths(List<List<String>> rows, int columns) {
+        double[] weights = new double[columns];
+        for (int column = 0; column < columns; column++) {
+            int longest = 8;
+            for (List<String> row : rows) if (column < row.size()) longest = Math.max(longest, Math.min(72, cleanMarkdownInline(row.get(column)).length()));
+            weights[column] = Math.sqrt(longest);
+        }
+        int minimum = columns <= 6 ? 720 : 480;
+        int distributable = Math.max(0, 9360 - minimum * columns);
+        double totalWeight = java.util.Arrays.stream(weights).sum();
+        int[] widths = new int[columns];
+        int used = 0;
+        for (int column = 0; column < columns; column++) {
+            widths[column] = column == columns - 1 ? 9360 - used
+                    : minimum + (int) Math.round(distributable * weights[column] / Math.max(1.0, totalWeight));
+            used += widths[column];
+        }
+        return widths;
     }
 
     private void addDocxMarkdownText(XWPFParagraph paragraph, String value, int size, String color, boolean defaultBold) {
@@ -476,13 +537,13 @@ public class DocumentationExportRenderer {
     }
 
     private void addDocxTraceability(XWPFDocument document, JsonNode canonical, Theme theme) {
-        addDocxPageBreak(document);
         addDocxBand(document, "TRACEABILITY", theme.primaryHex());
         XWPFParagraph heading = document.createParagraph();
         heading.setSpacingBefore(180);
         heading.setSpacingAfter(80);
         setDocxOutlineLevel(heading, 0);
-        addDocxText(heading, "Traceability matrix", 17, theme.inkHex(), true);
+        heading.setKeepNext(true);
+        addDocxText(heading, "Traceability matrix", 16, theme.inkHex(), true);
         XWPFParagraph introduction = document.createParagraph();
         introduction.setSpacingAfter(140);
         addDocxText(introduction, "Each generated requirement is connected to the downstream design, API, and acceptance evidence used for review.", 10, theme.mutedHex(), false);
@@ -493,34 +554,34 @@ public class DocumentationExportRenderer {
         for (int index = 0; index < headers.length; index++) {
             XWPFTableCell cell = table.getRow(0).getCell(index);
             cell.setColor("E7EBEF");
-            setDocxCell(cell, headers[index], 7, theme.mutedHex(), true);
+            setDocxCell(cell, headers[index], 10, theme.mutedHex(), true);
         }
         table.getRow(0).setRepeatHeader(true);
         for (JsonNode requirement : canonical.path("requirements")) {
             org.apache.poi.xwpf.usermodel.XWPFTableRow row = table.createRow();
-            setDocxCell(row.getCell(0), requirement.path("id").asText("Not recorded"), 8, theme.inkHex(), true);
-            setDocxCell(row.getCell(1), valueOrDash(requirement.path("useCaseId").asText()), 8, theme.inkHex(), false);
-            setDocxCell(row.getCell(2), valueOrDash(requirement.path("entityId").asText()), 8, theme.inkHex(), false);
-            setDocxCell(row.getCell(3), valueOrDash(requirement.path("apiOperationId").asText()), 8, theme.inkHex(), false);
-            setDocxCell(row.getCell(4), firstAcceptanceId(requirement), 8, theme.inkHex(), false);
-            setDocxCell(row.getCell(5), valueOrDash(requirement.path("sourceKind").asText()), 8, theme.inkHex(), false);
+            setDocxCell(row.getCell(0), requirement.path("id").asText("Not recorded"), 10, theme.inkHex(), true);
+            setDocxCell(row.getCell(1), valueOrDash(requirement.path("useCaseId").asText()), 10, theme.inkHex(), false);
+            setDocxCell(row.getCell(2), valueOrDash(requirement.path("entityId").asText()), 10, theme.inkHex(), false);
+            setDocxCell(row.getCell(3), valueOrDash(requirement.path("apiOperationId").asText()), 10, theme.inkHex(), false);
+            setDocxCell(row.getCell(4), firstAcceptanceId(requirement), 10, theme.inkHex(), false);
+            setDocxCell(row.getCell(5), valueOrDash(requirement.path("sourceKind").asText()), 10, theme.inkHex(), false);
         }
         configureDocxTable(table, widths);
 
         XWPFParagraph readingGuide = document.createParagraph();
         readingGuide.setSpacingBefore(120);
         readingGuide.setSpacingAfter(0);
-        addDocxText(readingGuide, "Reading the matrix: requirement -> use case -> entity -> API operation -> acceptance criterion.", 8, theme.mutedHex(), false);
+        addDocxText(readingGuide, "Reading the matrix: requirement -> use case -> entity -> API operation -> acceptance criterion.", 10, theme.mutedHex(), false);
     }
 
     private void addDocxOpenApi(XWPFDocument document, String source, Theme theme) {
-        addDocxPageBreak(document);
         addDocxBand(document, "OPENAPI CONTRACT", theme.primaryHex());
         XWPFParagraph heading = document.createParagraph();
         heading.setSpacingBefore(180);
         heading.setSpacingAfter(80);
         setDocxOutlineLevel(heading, 0);
-        addDocxText(heading, "OpenAPI contract", 17, theme.inkHex(), true);
+        heading.setKeepNext(true);
+        addDocxText(heading, "OpenAPI contract", 16, theme.inkHex(), true);
         try {
             JsonNode contract = new ObjectMapper().readTree(source);
             JsonNode info = contract.path("info");
@@ -538,7 +599,7 @@ public class DocumentationExportRenderer {
                 for (int cellIndex = 0; cellIndex < overviewRows[rowIndex].length; cellIndex++) {
                     boolean labelCell = cellIndex % 2 == 0;
                     row.getCell(cellIndex).setColor(labelCell ? "F4F6F8" : "FFFFFF");
-                    setDocxCell(row.getCell(cellIndex), overviewRows[rowIndex][cellIndex], labelCell ? 7 : 8, labelCell ? theme.mutedHex() : theme.inkHex(), labelCell);
+                    setDocxCell(row.getCell(cellIndex), overviewRows[rowIndex][cellIndex], 10, labelCell ? theme.mutedHex() : theme.inkHex(), labelCell);
                 }
             }
             configureDocxTable(overview, 900, 2220, 1050, 2220, 900, 2070);
@@ -554,14 +615,14 @@ public class DocumentationExportRenderer {
                 String[] headers = {"SCHEMA", "TYPE", "REQUIRED FIELDS"};
                 for (int index = 0; index < headers.length; index++) {
                     schemaTable.getRow(0).getCell(index).setColor("E7EBEF");
-                    setDocxCell(schemaTable.getRow(0).getCell(index), headers[index], 7, theme.mutedHex(), true);
+                    setDocxCell(schemaTable.getRow(0).getCell(index), headers[index], 10, theme.mutedHex(), true);
                 }
                 schemaTable.getRow(0).setRepeatHeader(true);
                 schemas.properties().forEach(schema -> {
                     org.apache.poi.xwpf.usermodel.XWPFTableRow row = schemaTable.createRow();
-                    setDocxCell(row.getCell(0), schema.getKey(), 8, theme.inkHex(), true);
-                    setDocxCell(row.getCell(1), schema.getValue().path("type").asText("object"), 8, theme.inkHex(), false);
-                    setDocxCell(row.getCell(2), jsonValues(schema.getValue().path("required")), 8, theme.inkHex(), false);
+                    setDocxCell(row.getCell(0), schema.getKey(), 10, theme.inkHex(), true);
+                    setDocxCell(row.getCell(1), schema.getValue().path("type").asText("object"), 10, theme.inkHex(), false);
+                    setDocxCell(row.getCell(2), jsonValues(schema.getValue().path("required")), 10, theme.inkHex(), false);
                 });
                 configureDocxTable(schemaTable, 2700, 1500, 5160);
             }
@@ -577,14 +638,14 @@ public class DocumentationExportRenderer {
         XWPFTable endpoint = document.createTable(1, 2);
         endpoint.getRow(0).getCell(0).setColor("E7EBEF");
         endpoint.getRow(0).getCell(1).setColor("FFFFFF");
-        setDocxCell(endpoint.getRow(0).getCell(0), method, 8, theme.inkHex(), true);
-        setDocxCell(endpoint.getRow(0).getCell(1), path, 9, theme.inkHex(), true);
+        setDocxCell(endpoint.getRow(0).getCell(0), method, 10, theme.inkHex(), true);
+        setDocxCell(endpoint.getRow(0).getCell(1), path, 10, theme.inkHex(), true);
         configureDocxTable(endpoint, 1080, 8280);
 
         XWPFParagraph summary = document.createParagraph();
         summary.setSpacingBefore(50);
         summary.setSpacingAfter(30);
-        addDocxText(summary, operation.path("summary").asText("No summary provided."), 9, theme.inkHex(), false);
+        addDocxText(summary, operation.path("summary").asText("No summary provided."), 11, theme.inkHex(), false);
         addDocxKeyValue(document, "Operation ID", operation.path("operationId").asText("Not declared"), theme);
         addDocxKeyValue(document, "Requirement", operation.path("x-velocira-requirement-id").asText("Not declared"), theme);
         addDocxKeyValue(document, "Responses", responseSummary(operation.path("responses")), theme);
@@ -601,8 +662,8 @@ public class DocumentationExportRenderer {
     private void addDocxKeyValue(XWPFDocument document, String label, String value, Theme theme) {
         XWPFParagraph paragraph = document.createParagraph();
         paragraph.setSpacingAfter(20);
-        addDocxText(paragraph, label + ": ", 8, theme.mutedHex(), true);
-        addDocxText(paragraph, value, 8, theme.inkHex(), false);
+        addDocxText(paragraph, label + ": ", 10, theme.mutedHex(), true);
+        addDocxText(paragraph, value, 10, theme.inkHex(), false);
     }
 
     private void configureDocxTable(XWPFTable table, int... widths) {
@@ -664,24 +725,36 @@ public class DocumentationExportRenderer {
     }
 
     private void addDocxDiagram(XWPFDocument document, String title, byte[] png, Theme theme) throws IOException {
-        addDocxPageBreak(document);
         addDocxBand(document, title.toUpperCase(Locale.ROOT), theme.primaryHex());
         XWPFParagraph heading = document.createParagraph();
-        heading.setSpacingBefore(240);
-        heading.setSpacingAfter(100);
+        heading.setSpacingBefore(180);
+        heading.setSpacingAfter(80);
+        heading.setKeepNext(true);
         setDocxOutlineLevel(heading, 0);
-        addDocxText(heading, title, 17, theme.primaryHex(), true);
+        addDocxText(heading, title, 16, theme.primaryHex(), true);
         XWPFParagraph diagram = document.createParagraph();
         diagram.setAlignment(org.apache.poi.xwpf.usermodel.ParagraphAlignment.CENTER);
+        BufferedImage sourceImage = ImageIO.read(new ByteArrayInputStream(png));
+        if (sourceImage == null || sourceImage.getWidth() <= 0 || sourceImage.getHeight() <= 0) {
+            throw new IOException("Unable to inspect rendered diagram dimensions.");
+        }
+        double widthInches = 6.5;
+        double heightInches = widthInches * sourceImage.getHeight() / sourceImage.getWidth();
+        if (heightInches > 7.2) {
+            heightInches = 7.2;
+            widthInches = heightInches * sourceImage.getWidth() / sourceImage.getHeight();
+        }
         try (ByteArrayInputStream input = new ByteArrayInputStream(png)) {
-            diagram.createRun().addPicture(input, Document.PICTURE_TYPE_PNG, slug(title) + ".png", Units.toEMU(6.25), Units.toEMU(3.05));
+            // Apache POI's Units.toEMU(double) accepts points, not inches.
+            diagram.createRun().addPicture(input, Document.PICTURE_TYPE_PNG, slug(title) + ".png",
+                    Units.toEMU(widthInches * 72.0), Units.toEMU(heightInches * 72.0));
         } catch (InvalidFormatException exception) {
             throw new IOException("Unable to embed rendered diagram in DOCX.", exception);
         }
         XWPFParagraph caption = document.createParagraph();
         caption.setAlignment(org.apache.poi.xwpf.usermodel.ParagraphAlignment.CENTER);
         caption.setSpacingAfter(120);
-        addDocxText(caption, "Themed visual representation. Original Mermaid and PlantUML source are included in the ZIP package.", 8, theme.mutedHex(), false);
+        addDocxText(caption, "Rendered from the canonical package model; editable Mermaid or PlantUML source is included when emitted.", 10, theme.mutedHex(), false);
     }
 
     private void addDocxText(XWPFParagraph paragraph, String text, int size, String color, boolean bold) {
@@ -706,6 +779,7 @@ public class DocumentationExportRenderer {
     private void addDocxBand(XWPFDocument document, String label, String fill) {
         XWPFParagraph band = document.createParagraph();
         band.setSpacingAfter(0);
+        band.setKeepNext(true);
         addDocxText(band, label.replace('_', ' '), 8, "64748B", true);
     }
 
@@ -724,7 +798,11 @@ public class DocumentationExportRenderer {
             for (JsonNode requirement : canonical.path("requirements")) {
                 if ("FUNCTIONAL".equals(requirement.path("type").asText())) {
                     String useCaseId = requirement.path("useCaseId").asText(requirement.path("id").asText("Use case"));
-                    labels.add(useCaseId + " - " + requirement.path("title").asText("Confirmed capability"));
+                    List<String> requirementActors = new ArrayList<>();
+                    requirement.path("actors").forEach(actor -> addMeaningfulName(requirementActors, actor.asText("")));
+                    String actor = requirementActors.isEmpty() ? firstMeaningfulName(canonical.path("actors"), "Project user")
+                            : String.join(", ", requirementActors.stream().limit(2).toList());
+                    labels.add(actor + " -> " + useCaseId + " - " + requirement.path("title").asText("Confirmed capability"));
                 }
             }
         }
@@ -734,7 +812,13 @@ public class DocumentationExportRenderer {
             case CONTEXT -> "Actors and external systems require confirmation";
             case USE_CASES -> "No functional use cases recorded";
         });
-        int items = Math.min(labels.size(), 8);
+        int totalLabels = labels.size();
+        List<String> displayLabels = labels;
+        if (labels.size() > 8) {
+            displayLabels = new ArrayList<>(labels.subList(0, 7));
+            displayLabels.add("+" + (totalLabels - 7) + " additional items; see the emitted source/specification");
+        }
+        int items = displayLabels.size();
         boolean grid = kind == DiagramKind.ERD || kind == DiagramKind.CONTEXT;
         int rows = grid ? (int) Math.ceil(items / 2.0) : items;
         int height = Math.max(420, 180 + rows * (grid ? 120 : 82));
@@ -792,7 +876,7 @@ public class DocumentationExportRenderer {
                     graphics.drawRoundRect(422, y, 610, 50, 10, 10);
                     graphics.setColor(theme.ink());
                     graphics.setFont(new Font("Arial", Font.BOLD, 15));
-                    graphics.drawString(ellipsize(labels.get(index), 56), 446, y + 31);
+                    graphics.drawString(ellipsize(displayLabels.get(index), 56), 446, y + 31);
                 }
             } else if (kind == DiagramKind.WORKFLOW) {
                 for (int index = 0; index < items; index++) {
@@ -807,7 +891,7 @@ public class DocumentationExportRenderer {
                     graphics.drawRoundRect(170, y, 860, 54, 10, 10);
                     graphics.setColor(theme.ink());
                     graphics.setFont(new Font("Arial", Font.BOLD, 15));
-                    graphics.drawString((index + 1) + ". " + ellipsize(labels.get(index), 78), 196, y + 33);
+                    graphics.drawString((index + 1) + ". " + ellipsize(displayLabels.get(index), 78), 196, y + 33);
                 }
             } else if (kind == DiagramKind.CONTEXT) {
                 List<String> actors = new ArrayList<>();
@@ -818,11 +902,6 @@ public class DocumentationExportRenderer {
                 int centerY = height / 2;
                 graphics.setColor(theme.primary());
                 graphics.fillRoundRect(455, centerY - 58, 290, 116, 14, 14);
-                graphics.setColor(Color.WHITE);
-                graphics.setFont(new Font("Arial", Font.BOLD, 20));
-                drawCentered(graphics, ellipsize(system, 26), 600, centerY - 4);
-                graphics.setFont(new Font("Arial", Font.PLAIN, 13));
-                drawCentered(graphics, "system boundary", 600, centerY + 24);
                 int visibleActors = Math.min(4, actors.size());
                 for (int index = 0; index < visibleActors; index++) {
                     int y = 120 + index * 78;
@@ -834,6 +913,11 @@ public class DocumentationExportRenderer {
                     graphics.setColor(theme.ink());
                     graphics.setFont(new Font("Arial", Font.BOLD, 14));
                     graphics.drawString("Person: " + ellipsize(actors.get(index), 25), 78, y + 32);
+                }
+                if (actors.size() > visibleActors) {
+                    graphics.setColor(theme.muted());
+                    graphics.setFont(new Font("Arial", Font.PLAIN, 12));
+                    graphics.drawString("+" + (actors.size() - visibleActors) + " additional actors", 78, 120 + visibleActors * 78 + 18);
                 }
                 int visibleExternals = Math.min(4, externals.size());
                 for (int index = 0; index < visibleExternals; index++) {
@@ -847,12 +931,41 @@ public class DocumentationExportRenderer {
                     graphics.setFont(new Font("Arial", Font.BOLD, 14));
                     graphics.drawString("External: " + ellipsize(externals.get(index), 23), 858, y + 32);
                 }
+                if (externals.size() > visibleExternals) {
+                    graphics.setColor(theme.muted());
+                    graphics.setFont(new Font("Arial", Font.PLAIN, 12));
+                    graphics.drawString("+" + (externals.size() - visibleExternals) + " additional externals", 858, 120 + visibleExternals * 78 + 18);
+                }
                 if (externals.isEmpty()) {
                     graphics.setColor(theme.muted());
                     graphics.setFont(new Font("Arial", Font.PLAIN, 13));
                     graphics.drawString("No external system confirmed", 862, centerY + 4);
                 }
+                // Draw the compact system label after the connection lines so a long
+                // project name remains legible at the boundary edge.
+                graphics.setColor(Color.WHITE);
+                graphics.setFont(new Font("Arial", Font.BOLD, 18));
+                drawCentered(graphics, ellipsize(system, 22), 600, centerY - 4);
+                graphics.setFont(new Font("Arial", Font.PLAIN, 13));
+                drawCentered(graphics, "system boundary", 600, centerY + 24);
             } else {
+                if (kind == DiagramKind.ERD) {
+                    graphics.setColor(theme.muted());
+                    graphics.setStroke(new BasicStroke(2f));
+                    for (JsonNode relationship : canonical.path("erdRelationships")) {
+                        int from = diagramEntityIndex(canonical, relationship.path("from").asText(), items);
+                        int to = diagramEntityIndex(canonical, relationship.path("to").asText(), items);
+                        if (from < 0 || to < 0) continue;
+                        int fromX = (from % 2 == 0 ? 70 : 635) + 248;
+                        int fromY = 124 + (from / 2) * 120 + 43;
+                        int toX = (to % 2 == 0 ? 70 : 635) + 248;
+                        int toY = 124 + (to / 2) * 120 + 43;
+                        graphics.drawLine(fromX, fromY, toX, toY);
+                        graphics.setFont(new Font("Arial", Font.PLAIN, 12));
+                        graphics.drawString(ellipsize(relationship.path("label").asText("related"), 22),
+                                (fromX + toX) / 2 + 6, (fromY + toY) / 2 - 5);
+                    }
+                }
                 for (int index = 0; index < items; index++) {
                     int column = index % 2;
                     int row = index / 2;
@@ -864,7 +977,7 @@ public class DocumentationExportRenderer {
                     graphics.drawRoundRect(x, y, 495, 86, 10, 10);
                     graphics.setColor(theme.ink());
                     graphics.setFont(new Font("Arial", Font.BOLD, 17));
-                    graphics.drawString(ellipsize(labels.get(index), 39), x + 22, y + 34);
+                    graphics.drawString(ellipsize(displayLabels.get(index), 39), x + 22, y + 34);
                     graphics.setColor(theme.muted());
                     graphics.setFont(new Font("Arial", Font.PLAIN, 13));
                     graphics.drawString(kind == DiagramKind.ERD ? "id  /  uuid  /  primary key" : "confirmed context boundary", x + 22, y + 61);
@@ -893,7 +1006,15 @@ public class DocumentationExportRenderer {
             String useCaseId = requirement.path("useCaseId").asText("");
             String title = meaningfulName(requirement.path("title").asText(""));
             String text = useCaseId + " · " + (title == null ? requirement.path("id").asText("Confirmed capability") : title);
-            nodes.append("<line x1=\"202\" y1=\"").append(y + 24).append("\" x2=\"422\" y2=\"").append(y + 24)
+            List<String> actors = new ArrayList<>();
+            requirement.path("actors").forEach(actorNode -> addMeaningfulName(actors, actorNode.asText("")));
+            String rowActor = actors.isEmpty() ? firstMeaningfulName(canonical.path("actors"), "Project user")
+                    : String.join(", ", actors.stream().limit(2).toList());
+            nodes.append("<rect x=\"56\" y=\"").append(y + 2).append("\" width=\"142\" height=\"44\" rx=\"8\" fill=\"#FFFFFF\" stroke=\"#")
+                    .append(theme.mutedHex()).append("\"/>")
+                    .append("<text x=\"127\" y=\"").append(y + 29).append("\" text-anchor=\"middle\" font-family=\"Arial\" font-size=\"12\" fill=\"#")
+                    .append(theme.inkHex()).append("\">").append(escapeXml(ellipsize(rowActor, 20))).append("</text>")
+                    .append("<line x1=\"198\" y1=\"").append(y + 24).append("\" x2=\"422\" y2=\"").append(y + 24)
                     .append("\" stroke=\"#").append(theme.primaryHex()).append("\" stroke-width=\"1.5\"/>")
                     .append("<rect x=\"422\" y=\"").append(y).append("\" width=\"590\" height=\"48\" rx=\"9\" fill=\"")
                     .append("#").append(theme.softHex()).append("\" stroke=\"#").append(theme.primaryHex()).append("\" stroke-width=\"1.5\"/>")
@@ -904,15 +1025,13 @@ public class DocumentationExportRenderer {
         }
         if (count == 0) nodes.append("<text x=\"422\" y=\"175\" font-family=\"Arial\" font-size=\"14\" fill=\"#").append(theme.mutedHex()).append("\">No functional use cases were recorded.</text>");
         int height = Math.max(330, y + 46);
-        String actor = firstMeaningfulName(canonical.path("actors"), "Project user");
         return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1100\" height=\"" + height + "\" viewBox=\"0 0 1100 " + height + "\">"
                 + "<rect width=\"100%\" height=\"100%\" fill=\"#" + theme.canvasHex() + "\"/><rect width=\"100%\" height=\"5\" fill=\"#" + theme.primaryHex() + "\"/>"
                 + "<text x=\"56\" y=\"58\" font-family=\"Arial\" font-size=\"26\" font-weight=\"bold\" fill=\"#" + theme.inkHex() + "\">Use case map</text>"
                 + "<text x=\"56\" y=\"84\" font-family=\"Arial\" font-size=\"14\" fill=\"#" + theme.mutedHex() + "\">Actor-to-capability links derived from reviewed functional requirements.</text>"
                 + "<rect x=\"310\" y=\"118\" width=\"760\" height=\"" + Math.max(116, count * 76 + 36) + "\" rx=\"12\" fill=\"none\" stroke=\"#CBD5E1\" stroke-width=\"1.5\"/>"
                 + "<text x=\"332\" y=\"142\" font-family=\"Arial\" font-size=\"11\" font-weight=\"bold\" fill=\"#" + theme.mutedHex() + "\">SYSTEM CAPABILITIES</text>"
-                + "<circle cx=\"142\" cy=\"" + (height / 2 - 44) + "\" r=\"13\" fill=\"#" + theme.inkHex() + "\"/><path d=\"M142 " + (height / 2 - 29) + " L142 " + (height / 2 + 28) + " M116 " + (height / 2 - 3) + " L168 " + (height / 2 - 3) + " M142 " + (height / 2 + 28) + " L116 " + (height / 2 + 60) + " M142 " + (height / 2 + 28) + " L168 " + (height / 2 + 60) + "\" stroke=\"#" + theme.inkHex() + "\" stroke-width=\"3\" fill=\"none\"/>"
-                + "<text x=\"142\" y=\"" + (height / 2 + 86) + "\" text-anchor=\"middle\" font-family=\"Arial\" font-size=\"13\" fill=\"#" + theme.inkHex() + "\">" + escapeXml(ellipsize(actor, 23)) + "</text>" + nodes + "</svg>";
+                + nodes + "</svg>";
     }
 
     private String erdSvg(JsonNode canonical, Theme theme, DocumentationExportTemplate template) {
@@ -932,12 +1051,39 @@ public class DocumentationExportRenderer {
                     .append("<text x=\"").append(x + 22).append("\" y=\"").append(y + 59).append("\" font-family=\"Arial\" font-size=\"12\" fill=\"#").append(theme.mutedHex()).append("\">id  /  uuid  /  primary key</text>");
             count++;
         }
+        StringBuilder relations = new StringBuilder();
+        for (JsonNode relationship : canonical.path("erdRelationships")) {
+            int from = diagramEntityIndex(canonical, relationship.path("from").asText(), count);
+            int to = diagramEntityIndex(canonical, relationship.path("to").asText(), count);
+            if (from < 0 || to < 0) continue;
+            int fromX = (from % 2 == 0 ? 56 : 548) + 228;
+            int fromY = 124 + (from / 2) * 112 + 41;
+            int toX = (to % 2 == 0 ? 56 : 548) + 228;
+            int toY = 124 + (to / 2) * 112 + 41;
+            relations.append("<line x1=\"").append(fromX).append("\" y1=\"").append(fromY)
+                    .append("\" x2=\"").append(toX).append("\" y2=\"").append(toY)
+                    .append("\" stroke=\"#").append(theme.mutedHex()).append("\" stroke-width=\"2\"/>")
+                    .append("<text x=\"").append((fromX + toX) / 2 + 5).append("\" y=\"").append((fromY + toY) / 2 - 5)
+                    .append("\" font-family=\"Arial\" font-size=\"11\" fill=\"#").append(theme.mutedHex()).append("\">")
+                    .append(escapeXml(ellipsize(relationship.path("label").asText("related"), 20))).append("</text>");
+        }
         if (count == 0) boxes.append("<text x=\"56\" y=\"154\" font-family=\"Arial\" font-size=\"14\" fill=\"#").append(theme.mutedHex()).append("\">No entities were recorded.</text>");
         int height = Math.max(300, 166 + ((count + 1) / 2) * 112);
         return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1060\" height=\"" + height + "\" viewBox=\"0 0 1060 " + height + "\">"
                 + "<rect width=\"100%\" height=\"100%\" fill=\"#" + theme.canvasHex() + "\"/><rect width=\"100%\" height=\"5\" fill=\"#" + theme.primaryHex() + "\"/>"
                 + "<text x=\"56\" y=\"58\" font-family=\"Arial\" font-size=\"26\" font-weight=\"bold\" fill=\"#" + theme.inkHex() + "\">Entity model</text>"
-                + "<text x=\"56\" y=\"84\" font-family=\"Arial\" font-size=\"14\" fill=\"#" + theme.mutedHex() + "\">Entities inferred from reviewed requirements. Relationships appear only when relationship evidence is recorded.</text>" + boxes + "</svg>";
+                + "<text x=\"56\" y=\"84\" font-family=\"Arial\" font-size=\"14\" fill=\"#" + theme.mutedHex() + "\">Entities and relationships recorded in the canonical SRS.</text>" + relations + boxes + "</svg>";
+    }
+
+    private int diagramEntityIndex(JsonNode canonical, String token, int limit) {
+        String normalized = token.replaceAll("[^A-Za-z0-9]+", "_").replaceAll("(^_|_$)", "").toUpperCase(Locale.ROOT);
+        int index = 0;
+        for (JsonNode entity : canonical.path("entities")) {
+            String candidate = entity.path("name").asText().replaceAll("[^A-Za-z0-9]+", "_").replaceAll("(^_|_$)", "").toUpperCase(Locale.ROOT);
+            if (candidate.equals(normalized)) return index < limit ? index : -1;
+            index++;
+        }
+        return -1;
     }
 
     private String contextSvg(JsonNode canonical, Theme theme) {
@@ -977,7 +1123,7 @@ public class DocumentationExportRenderer {
         canonical.path("workflowSteps").forEach(step -> addMeaningfulName(steps, step.asText("")));
         if (steps.isEmpty()) steps.add("Workflow sequence requires confirmation");
         int count = Math.min(steps.size(), 12);
-        int height = Math.max(330, 150 + count * 76);
+        int height = Math.max(330, 150 + count * 76 + (steps.size() > count ? 34 : 0));
         StringBuilder nodes = new StringBuilder();
         for (int index = 0; index < count; index++) {
             int y = 118 + index * 76;
@@ -985,6 +1131,10 @@ public class DocumentationExportRenderer {
             nodes.append("<rect x=\"145\" y=\"").append(y).append("\" width=\"810\" height=\"54\" rx=\"9\" fill=\"#").append(theme.softHex()).append("\" stroke=\"#").append(theme.primaryHex()).append("\" stroke-width=\"1.5\"/>")
                     .append("<text x=\"174\" y=\"").append(y + 33).append("\" font-family=\"Arial\" font-size=\"14\" font-weight=\"bold\" fill=\"#").append(theme.inkHex()).append("\">").append(index + 1).append(". ").append(escapeXml(ellipsize(steps.get(index), 86))).append("</text>");
         }
+        if (steps.size() > count) nodes.append("<text x=\"550\" y=\"").append(132 + count * 76)
+                .append("\" text-anchor=\"middle\" font-family=\"Arial\" font-size=\"13\" fill=\"#")
+                .append(theme.mutedHex()).append("\">+").append(steps.size() - count)
+                .append(" additional steps; see workflow specification</text>");
         return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1100\" height=\"" + height + "\" viewBox=\"0 0 1100 " + height + "\">"
                 + "<rect width=\"100%\" height=\"100%\" fill=\"#" + theme.canvasHex() + "\"/><rect width=\"100%\" height=\"5\" fill=\"#" + theme.primaryHex() + "\"/>"
                 + "<text x=\"56\" y=\"58\" font-family=\"Arial\" font-size=\"26\" font-weight=\"bold\" fill=\"#" + theme.inkHex() + "\">Primary workflow</text>"
@@ -1086,7 +1236,28 @@ public class DocumentationExportRenderer {
     }
 
     private String pdfText(String value) {
-        return value.replaceAll("[^\\x20-\\x7E]", "?");
+        if (value == null) return "";
+        // PDF exports use PDFBox's Standard 14 Helvetica fonts. Transliterate common
+        // editorial characters before the final ASCII fallback so user-provided titles
+        // and generated documentation stay readable instead of gaining question marks.
+        String normalized = value
+                .replace('\u00A0', ' ')
+                .replace('\u2010', '-')
+                .replace('\u2011', '-')
+                .replace('\u2012', '-')
+                .replace('\u2013', '-')
+                .replace('\u2014', '-')
+                .replace('\u2212', '-')
+                .replace('\u2018', '\'')
+                .replace('\u2019', '\'')
+                .replace('\u201C', '"')
+                .replace('\u201D', '"')
+                .replace("\u2026", "...")
+                .replace('\u2022', '*')
+                .replace("\u2192", "->")
+                .replace("\u2190", "<-");
+        normalized = Normalizer.normalize(normalized, Normalizer.Form.NFD).replaceAll("\\p{M}+", "");
+        return normalized.replaceAll("[^\\x20-\\x7E]", "?");
     }
 
     private String slug(String value) {
@@ -1105,15 +1276,36 @@ public class DocumentationExportRenderer {
                                    JsonNode validation, Map<DocumentationArtifactType, ArtifactSnapshot> artifacts) {
         static PackageSnapshot from(DocumentationPackageEntity documentationPackage, Map<DocumentationArtifactType, DocumentationArtifactEntity> source) {
             Map<DocumentationArtifactType, ArtifactSnapshot> artifacts = new EnumMap<>(DocumentationArtifactType.class);
-            for (DocumentationArtifactType type : DocumentationArtifactType.values()) {
-                DocumentationArtifactEntity artifact = source.get(type);
-                artifacts.put(type, new ArtifactSnapshot(artifact == null ? "" : artifact.getContent(), artifact == null ? "" : artifact.getSourceContent()));
-            }
+            source.forEach((type, artifact) -> artifacts.put(type,
+                    new ArtifactSnapshot(artifact.getContent() == null ? "" : artifact.getContent(),
+                            artifact.getSourceContent() == null ? "" : artifact.getSourceContent())));
             return new PackageSnapshot(documentationPackage.getProject().getName(), documentationPackage.getVersionNumber(),
                     documentationPackage.getSrsVersion().getVersionNumber(), documentationPackage.getCanonicalModel(), documentationPackage.getValidationOutcome(), artifacts);
         }
 
-        ArtifactSnapshot artifact(DocumentationArtifactType type) { return artifacts.get(type); }
+        ArtifactSnapshot artifact(DocumentationArtifactType type) { return artifacts.getOrDefault(type, new ArtifactSnapshot("", "")); }
+
+        boolean hasArtifact(DocumentationArtifactType type) {
+            ArtifactSnapshot artifact = artifacts.get(type);
+            return artifact != null && (!artifact.content().isBlank() || !artifact.sourceContent().isBlank());
+        }
+
+        String omissionReason(DocumentationArtifactType type) {
+            for (JsonNode item : canonicalModel.path("documentPlan")) {
+                if (type.name().equals(item.path("artifactType").asText())) return item.path("reason").asText("No canonical evidence supports this artifact.");
+            }
+            return "No canonical evidence supports this artifact.";
+        }
+
+        String generationMode() {
+            return canonicalModel.path("generationManifest").path("mode").asText("STANDARD").toUpperCase(Locale.ROOT);
+        }
+
+        String validationLabel() {
+            if (!validation.path("valid").asBoolean(false)) return "FAILED — structural issues recorded";
+            if (!validation.path("approvalEligible").asBoolean(false)) return "NEEDS REVIEW — material gaps recorded";
+            return "APPROVAL ELIGIBLE";
+        }
 
         String combinedMarkdown() {
             StringBuilder content = new StringBuilder();
@@ -1169,8 +1361,10 @@ public class DocumentationExportRenderer {
         private final PDType1Font regular = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
         private final PDType1Font bold = new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD);
         private PDPageContentStream stream;
+        private PDPage contentsPage;
         private float y;
         private int pageNumber;
+        private final List<TocEntry> tocEntries = new ArrayList<>();
 
         private PdfComposer(PDDocument document, PackageSnapshot snapshot, DocumentationExportStyle style) {
             this.document = document;
@@ -1192,52 +1386,45 @@ public class DocumentationExportRenderer {
                 cover.addRect(0, 774, PDRectangle.LETTER.getWidth(), 18);
                 cover.fill();
                 cover.setNonStrokingColor(theme.ink());
-                writeAt(cover, "VELOCIRA", bold, 12, 54, 720);
-                writeAt(cover, "DOCUMENTATION PACKAGE", bold, 10, 54, 696);
-                writeAt(cover, pdfText(snapshot.projectName()), bold, style.layout() == DocumentationExportLayout.PRESENTATION ? 31 : 27, 54, 620);
-                writeAt(cover, pdfText(template.coverline()), regular, 14, 54, 588);
-                writeAt(cover, "Package v" + snapshot.versionNumber() + "  |  Source SRS v" + snapshot.srsVersionNumber(), regular, 11, 54, 530);
-                writeAt(cover, "Template: " + style.template() + "  |  Theme: " + style.theme() + "  |  Layout: " + style.layout(), regular, 10, 54, 506);
-                cover.setNonStrokingColor(theme.soft());
-                cover.addRect(54, 165, 504, 118);
-                cover.fill();
-                cover.setNonStrokingColor(theme.ink());
-                writeAt(cover, pdfText(template.callout()), bold, 16, 76, 238);
-                writeAt(cover, "Requirements, visual diagrams, contracts, and traceability remain connected", regular, 11, 76, 212);
-                writeAt(cover, "to the same reviewed package snapshot.", regular, 11, 76, 194);
+                writeAt(cover, "VELOCIRA  |  DOCUMENTATION MEMO", bold, 10, 54, 720);
+                writeAt(cover, pdfText(snapshot.projectName()), bold, 22, 54, 664);
+                writeAt(cover, "Software delivery documentation brief", regular, 13, 54, 638);
+                String[][] rows = {
+                        {"SUBJECT", "Documentation package v" + snapshot.versionNumber()},
+                        {"CANONICAL SOURCE", "SRS v" + snapshot.srsVersionNumber()},
+                        {"GENERATION MODE", snapshot.generationMode()},
+                        {"VALIDATION", snapshot.validationLabel()},
+                        {"FORMAT", "standard_business_brief / memo_masthead"}
+                };
+                float rowY = 570;
+                for (String[] row : rows) {
+                    cover.setNonStrokingColor(theme.soft());
+                    cover.addRect(54, rowY - 28, 504, 26);
+                    cover.fill();
+                    cover.setNonStrokingColor(theme.muted());
+                    writeAt(cover, row[0], bold, 8, 66, rowY - 18);
+                    cover.setNonStrokingColor(theme.ink());
+                    writeAt(cover, pdfText(ellipsize(row[1], 66)), regular, 10.5f, 190, rowY - 18);
+                    rowY -= 31;
+                }
+                writeAt(cover, "PURPOSE", bold, 9, 54, 376);
+                writeAt(cover, "Provide one reviewable hand-off whose emitted artifacts, omissions, diagrams,", regular, 11, 54, 352);
+                writeAt(cover, "contracts, and trace links resolve to the same canonical SRS snapshot.", regular, 11, 54, 334);
             }
         }
 
         void contents() throws IOException {
             newPage("Contents");
-            text("Contents", bold, 20, theme.primary(), 26);
-            text("A structured route through the reviewed package snapshot.", regular, 9.4f, theme.muted(), 24);
-            tocItem("01", "System requirements");
-            tocItem("02", "Business requirements");
-            tocItem("03", "Architecture description");
-            tocItem("04", "C4 system context");
-            tocItem("05", "Use case map");
-            tocItem("06", "Use cases");
-            tocItem("07", "Primary workflow");
-            tocItem("08", "Workflow and recovery");
-            tocItem("09", "Entity relationship diagram");
-            tocItem("10", "Data dictionary");
-            tocItem("11", "Security and privacy");
-            tocItem("12", "Verification and testing");
-            tocItem("13", "Deployment");
-            tocItem("14", "Operations");
-            tocItem("15", "User manual");
-            tocItem("16", "Risk and decisions");
-            tocItem("17", "Traceability");
-            tocItem("18", "OpenAPI contract");
-            callout("Review signal", snapshot.validation().path("valid").asBoolean(false) ? "Validation passed for the generated package." : "Review the recorded package validation findings before release.");
+            contentsPage = document.getPage(document.getNumberOfPages() - 1);
+            y = 0;
         }
 
         void section(String title, String markdown) throws IOException {
-            newPage(title);
-            text(title, bold, 19, theme.primary(), 28);
+            startSection(title, 155);
+            text(title, bold, 16, theme.primary(), 24);
             sectionRule();
             boolean code = false;
+            boolean skippedArtifactTitle = false;
             String[] lines = markdown.split("\\r?\\n");
             for (int index = 0; index < lines.length; index++) {
                 String raw = lines[index];
@@ -1260,15 +1447,24 @@ public class DocumentationExportRenderer {
                 int level = headingLevel(raw);
                 String body = cleanMarkdownInline(level > 0 ? raw.substring(level + 1).trim() : raw);
                 if (body.isBlank()) continue;
+                if (level == 1 && !skippedArtifactTitle) {
+                    skippedArtifactTitle = true;
+                    continue;
+                }
                 if (level > 0) {
-                    ensure(24, title);
-                    text(body, bold, level == 1 ? 14 : level == 2 ? 12 : 11, level == 1 ? theme.primary() : theme.ink(), level == 1 ? 21 : 17);
+                    float headingSize = level == 1 ? 16 : level == 2 ? 13 : 12;
+                    float headingLeading = level == 1 ? 22 : 18;
+                    int headingWidth = level == 1 ? 50 : level == 2 ? 62 : 68;
+                    for (String headingLine : wrap(body, headingWidth)) {
+                        ensure(headingLeading + 8, title);
+                        text(headingLine, bold, headingSize, level == 1 ? theme.primary() : theme.ink(), headingLeading);
+                    }
                     continue;
                 }
                 boolean bullet = raw.startsWith("- ") || raw.startsWith("  - ");
-                for (String line : wrap(bullet ? "- " + cleanMarkdownInline(raw.replaceFirst("^\\s*-\\s+", "")) : body, code ? 88 : 96)) {
-                    ensure(code ? 13 : 15, title);
-                    text(line, code ? regular : regular, code ? 7.5f : 9.4f, code ? theme.muted() : theme.ink(), code ? 10 : 14);
+                for (String line : wrap(bullet ? "- " + cleanMarkdownInline(raw.replaceFirst("^\\s*-\\s+", "")) : body, code ? 82 : 88)) {
+                    ensure(code ? 14 : 17, title);
+                    text(line, regular, code ? 10 : 10.5f, code ? theme.muted() : theme.ink(), code ? 12 : 15);
                 }
             }
         }
@@ -1277,18 +1473,18 @@ public class DocumentationExportRenderer {
             if (rows.isEmpty() || rows.get(0).isEmpty()) return;
             int columns = Math.min(6, rows.stream().mapToInt(List::size).max().orElse(1));
             float tableWidth = 504;
-            float columnWidth = tableWidth / columns;
-            int charactersPerLine = Math.max(9, 78 / columns);
+            float[] columnWidths = pdfColumnWidths(rows, columns, tableWidth);
             for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
                 List<List<String>> wrappedCells = new ArrayList<>();
                 int lineCount = 1;
                 for (int column = 0; column < columns; column++) {
                     String value = column < rows.get(rowIndex).size() ? rows.get(rowIndex).get(column) : "";
+                    int charactersPerLine = Math.max(5, (int) ((columnWidths[column] - 10) / 5.2f));
                     List<String> wrapped = wrap(cleanMarkdownInline(value), charactersPerLine);
                     wrappedCells.add(wrapped);
                     lineCount = Math.max(lineCount, wrapped.size());
                 }
-                float rowHeight = Math.max(24, 10 + lineCount * 10);
+                float rowHeight = Math.max(28, 10 + lineCount * 12);
                 ensure(rowHeight + 5, section);
                 stream.setNonStrokingColor(rowIndex == 0 ? new Color(231, 235, 239) : (rowIndex % 2 == 0 ? theme.soft() : theme.canvas()));
                 stream.addRect(54, y - rowHeight, tableWidth, rowHeight);
@@ -1296,40 +1492,69 @@ public class DocumentationExportRenderer {
                 stream.setStrokingColor(new Color(214, 218, 225));
                 stream.setLineWidth(0.5f);
                 stream.addRect(54, y - rowHeight, tableWidth, rowHeight);
+                float boundary = 54;
                 for (int column = 1; column < columns; column++) {
-                    float x = 54 + column * columnWidth;
-                    stream.moveTo(x, y);
-                    stream.lineTo(x, y - rowHeight);
+                    boundary += columnWidths[column - 1];
+                    stream.moveTo(boundary, y);
+                    stream.lineTo(boundary, y - rowHeight);
                 }
                 stream.stroke();
                 stream.setNonStrokingColor(rowIndex == 0 ? theme.muted() : theme.ink());
+                float columnX = 59;
                 for (int column = 0; column < columns; column++) {
                     List<String> wrapped = wrappedCells.get(column);
                     for (int lineIndex = 0; lineIndex < wrapped.size(); lineIndex++) {
+                        int charactersPerLine = Math.max(5, (int) ((columnWidths[column] - 10) / 5.2f));
                         writeAt(stream, pdfText(ellipsize(wrapped.get(lineIndex), charactersPerLine)), rowIndex == 0 ? bold : regular,
-                                rowIndex == 0 ? 7.2f : 7.6f, 59 + column * columnWidth, y - 15 - lineIndex * 10);
+                                10, columnX, y - 17 - lineIndex * 12);
                     }
+                    columnX += columnWidths[column];
                 }
                 y -= rowHeight;
             }
             y -= 8;
         }
 
+        private float[] pdfColumnWidths(List<List<String>> rows, int columns, float totalWidth) {
+            double[] weights = new double[columns];
+            for (int column = 0; column < columns; column++) {
+                int longest = 8;
+                for (List<String> row : rows) if (column < row.size()) longest = Math.max(longest, Math.min(72, cleanMarkdownInline(row.get(column)).length()));
+                weights[column] = Math.sqrt(longest);
+            }
+            float minimum = columns <= 6 ? 42 : 30;
+            float distributable = Math.max(0, totalWidth - minimum * columns);
+            double weightTotal = java.util.Arrays.stream(weights).sum();
+            float[] widths = new float[columns];
+            float used = 0;
+            for (int column = 0; column < columns; column++) {
+                widths[column] = column == columns - 1 ? totalWidth - used
+                        : minimum + (float) (distributable * weights[column] / Math.max(1.0, weightTotal));
+                used += widths[column];
+            }
+            return widths;
+        }
+
         void traceability(JsonNode canonical) throws IOException {
-            newPage("Traceability");
-            text("Traceability matrix", bold, 19, theme.ink(), 26);
-            text("Requirement-to-delivery links from the reviewed package snapshot.", regular, 9.4f, theme.muted(), 22);
+            startSection("Traceability", 155);
+            text("Traceability matrix", bold, 16, theme.ink(), 24);
+            text("Requirement-to-delivery links from the reviewed package snapshot.", regular, 10.5f, theme.muted(), 20);
             for (JsonNode requirement : canonical.path("requirements")) {
                 traceCard(requirement);
             }
             if (canonical.path("requirements").isEmpty()) {
-                text("No traceability records were generated for this package.", regular, 9.4f, theme.muted(), 16);
+                text("No traceability records were generated for this package.", regular, 10.5f, theme.muted(), 16);
             }
         }
 
         void openApi(String source) throws IOException {
+            // OpenAPI is a compact standalone deliverable. Starting it on a
+            // fresh page keeps all endpoint cards together instead of leaving
+            // one card on a nearly empty trailing page.
             newPage("OpenAPI contract");
-            text("OpenAPI contract", bold, 19, theme.ink(), 26);
+            PDPage page = document.getPage(document.getNumberOfPages() - 1);
+            tocEntries.add(new TocEntry("OpenAPI contract", pageNumber, page));
+            text("OpenAPI contract", bold, 16, theme.ink(), 24);
             try {
                 JsonNode contract = new ObjectMapper().readTree(source);
                 JsonNode info = contract.path("info");
@@ -1359,53 +1584,53 @@ public class DocumentationExportRenderer {
                 if (exception.getCause() instanceof IOException ioException) throw ioException;
                 throw exception;
             } catch (IOException exception) {
-                text("The structured contract preview could not be generated. The included OpenAPI source remains authoritative.", regular, 9.4f, theme.muted(), 16);
+                text("The structured contract preview could not be generated. The included OpenAPI source remains authoritative.", regular, 10.5f, theme.muted(), 16);
             }
         }
 
         private void apiOverview(JsonNode contract, JsonNode info) throws IOException {
-            ensure(58, "OpenAPI contract");
+            ensure(66, "OpenAPI contract");
             stream.setNonStrokingColor(theme.soft());
             stream.addRect(54, y - 48, 504, 42);
             stream.fill();
             stream.setNonStrokingColor(theme.muted());
-            writeAt(stream, "OPENAPI " + contract.path("openapi").asText("Not declared"), bold, 8, 66, y - 19);
-            writeAt(stream, "VERSION " + info.path("version").asText("Not declared"), bold, 8, 214, y - 19);
-            writeAt(stream, "ENDPOINTS " + contract.path("paths").size(), bold, 8, 358, y - 19);
-            writeAt(stream, contract.path("components").path("securitySchemes").isMissingNode() ? "AUTH: NOT DECLARED" : "AUTH: DECLARED", regular, 8, 66, y - 35);
+            writeAt(stream, "OPENAPI " + contract.path("openapi").asText("Not declared"), bold, 10, 66, y - 19);
+            writeAt(stream, "VERSION " + info.path("version").asText("Not declared"), bold, 10, 214, y - 19);
+            writeAt(stream, "ENDPOINTS " + contract.path("paths").size(), bold, 10, 358, y - 19);
+            writeAt(stream, contract.path("components").path("securitySchemes").isMissingNode() ? "AUTH: NOT DECLARED" : "AUTH: DECLARED", regular, 10, 66, y - 37);
             y -= 62;
         }
 
         private void traceCard(JsonNode requirement) throws IOException {
-            ensure(94, "Traceability");
+            ensure(112, "Traceability");
             stream.setNonStrokingColor(theme.soft());
-            stream.addRect(54, y - 82, 504, 76);
+            stream.addRect(54, y - 98, 504, 92);
             stream.fill();
             stream.setNonStrokingColor(theme.ink());
             writeAt(stream, pdfText(requirement.path("id").asText("Requirement")), bold, 10, 66, y - 20);
             stream.setNonStrokingColor(theme.muted());
-            writeAt(stream, "USE CASE  " + pdfText(valueOrDash(requirement.path("useCaseId").asText())), regular, 8, 66, y - 38);
-            writeAt(stream, "ENTITY  " + pdfText(valueOrDash(requirement.path("entityId").asText())), regular, 8, 260, y - 38);
-            writeAt(stream, "API  " + pdfText(ellipsize(valueOrDash(requirement.path("apiOperationId").asText()), 31)), regular, 8, 66, y - 55);
-            writeAt(stream, "ACCEPTANCE  " + pdfText(ellipsize(firstAcceptanceId(requirement), 33)), regular, 8, 260, y - 55);
-            writeAt(stream, "SOURCE  " + pdfText(valueOrDash(requirement.path("sourceKind").asText())), regular, 8, 66, y - 70);
-            y -= 94;
+            writeAt(stream, "USE CASE  " + pdfText(valueOrDash(requirement.path("useCaseId").asText())), regular, 10, 66, y - 42);
+            writeAt(stream, "ENTITY  " + pdfText(valueOrDash(requirement.path("entityId").asText())), regular, 10, 296, y - 42);
+            writeAt(stream, "API  " + pdfText(ellipsize(valueOrDash(requirement.path("apiOperationId").asText()), 31)), regular, 10, 66, y - 63);
+            writeAt(stream, "ACCEPTANCE  " + pdfText(ellipsize(firstAcceptanceId(requirement), 28)), regular, 10, 296, y - 63);
+            writeAt(stream, "SOURCE  " + pdfText(valueOrDash(requirement.path("sourceKind").asText())), regular, 10, 66, y - 84);
+            y -= 112;
         }
 
         private void endpointCard(String method, String path, JsonNode operation) throws IOException {
-            ensure(98, "OpenAPI contract");
+            ensure(116, "OpenAPI contract");
             stream.setNonStrokingColor(theme.soft());
-            stream.addRect(54, y - 86, 504, 80);
+            stream.addRect(54, y - 104, 504, 98);
             stream.fill();
             stream.setNonStrokingColor(theme.ink());
             writeAt(stream, method + "  " + pdfText(path), bold, 10, 66, y - 20);
             stream.setNonStrokingColor(theme.muted());
-            List<String> summary = wrap(pdfText(operation.path("summary").asText("No summary provided.")), 78);
-            writeAt(stream, summary.get(0), regular, 8.5f, 66, y - 38);
-            if (summary.size() > 1) writeAt(stream, summary.get(1), regular, 8.5f, 66, y - 50);
-            writeAt(stream, "OPERATION  " + pdfText(ellipsize(operation.path("operationId").asText("Not declared"), 33)), regular, 8, 66, y - 67);
-            writeAt(stream, "REQUIREMENT  " + pdfText(ellipsize(operation.path("x-velocira-requirement-id").asText("Not declared"), 25)), regular, 8, 298, y - 67);
-            y -= 98;
+            List<String> summary = wrap(pdfText(operation.path("summary").asText("No summary provided.")), 72);
+            writeAt(stream, summary.get(0), regular, 10, 66, y - 42);
+            if (summary.size() > 1) writeAt(stream, summary.get(1), regular, 10, 66, y - 57);
+            writeAt(stream, "OPERATION  " + pdfText(ellipsize(operation.path("operationId").asText("Not declared"), 33)), regular, 10, 66, y - 79);
+            writeAt(stream, "REQUIREMENT  " + pdfText(ellipsize(operation.path("x-velocira-requirement-id").asText("Not declared"), 25)), regular, 10, 298, y - 79);
+            y -= 116;
         }
 
         private void schemaRow(String name, JsonNode schema) throws IOException {
@@ -1414,28 +1639,71 @@ public class DocumentationExportRenderer {
             stream.addRect(54, y - 30, 504, 25);
             stream.fill();
             stream.setNonStrokingColor(theme.ink());
-            writeAt(stream, pdfText(name), bold, 8.5f, 66, y - 20);
+            writeAt(stream, pdfText(name), bold, 10, 66, y - 20);
             stream.setNonStrokingColor(theme.muted());
-            writeAt(stream, pdfText(schema.path("type").asText("object")), regular, 8, 226, y - 20);
-            writeAt(stream, pdfText(ellipsize(jsonValues(schema.path("required")), 44)), regular, 8, 320, y - 20);
+            writeAt(stream, pdfText(schema.path("type").asText("object")), regular, 10, 226, y - 20);
+            writeAt(stream, pdfText(ellipsize(jsonValues(schema.path("required")), 38)), regular, 10, 320, y - 20);
             y -= 36;
         }
 
         void diagram(String title, byte[] png) throws IOException {
-            newPage(title);
-            text(title, bold, 19, theme.primary(), 28);
-            sectionRule();
-            text("Visual export generated from the reviewed package snapshot. The original editable source remains in the ZIP package.", regular, 9.4f, theme.muted(), 18);
-            ensure(250, title);
             PDImageXObject image = PDImageXObject.createFromByteArray(document, png, slug(title) + ".png");
             float width = 504;
             float height = width * image.getHeight() / image.getWidth();
-            stream.drawImage(image, 54, y - height, width, height);
+            float maximumHeight = 430;
+            if (height > maximumHeight) {
+                height = maximumHeight;
+                width = height * image.getWidth() / image.getHeight();
+            }
+            startSection(title, Math.min(610, height + 110));
+            text(title, bold, 16, theme.primary(), 24);
+            sectionRule();
+            text("Rendered from the canonical package model; editable source is included when emitted.", regular, 10.5f, theme.muted(), 18);
+            ensure(height + 12, title);
+            stream.drawImage(image, 54 + (504 - width) / 2, y - height, width, height);
             y -= height + 18;
         }
 
         void close() throws IOException {
-            if (stream != null) stream.close();
+            if (stream != null) {
+                stream.close();
+                stream = null;
+            }
+            renderContentsAndOutline();
+        }
+
+        private void startSection(String title, float minimumSpace) throws IOException {
+            if (stream == null || y - minimumSpace < 56) newPage(title);
+            else y -= 18;
+            PDPage page = document.getPage(document.getNumberOfPages() - 1);
+            tocEntries.add(new TocEntry(title, pageNumber, page));
+        }
+
+        private void renderContentsAndOutline() throws IOException {
+            if (contentsPage == null) return;
+            stream = new PDPageContentStream(document, contentsPage, PDPageContentStream.AppendMode.APPEND, true, true);
+            y = 720;
+            text("Contents", bold, 20, theme.primary(), 28);
+            text("Page references and PDF bookmarks resolve to the generated section starts.", regular, 10.5f, theme.muted(), 24);
+            for (int index = 0; index < tocEntries.size(); index++) {
+                TocEntry entry = tocEntries.get(index);
+                tocItem(String.format("%02d", index + 1), entry.title(), entry.pageNumber());
+            }
+            callout("Package validation", snapshot.validationLabel());
+            stream.close();
+            stream = null;
+
+            PDDocumentOutline outline = new PDDocumentOutline();
+            document.getDocumentCatalog().setDocumentOutline(outline);
+            for (TocEntry entry : tocEntries) {
+                PDOutlineItem item = new PDOutlineItem();
+                item.setTitle(pdfText(entry.title()));
+                PDPageFitWidthDestination destination = new PDPageFitWidthDestination();
+                destination.setPage(entry.page());
+                item.setDestination(destination);
+                outline.addLast(item);
+            }
+            outline.openNode();
         }
 
         private void newPage(String section) throws IOException {
@@ -1452,8 +1720,9 @@ public class DocumentationExportRenderer {
             stream.fill();
             stream.setNonStrokingColor(theme.muted());
             writeAt(stream, "VELOCIRA  |  " + pdfText(snapshot.projectName()), regular, 8, 54, 755);
-            writeAt(stream, pdfText(section), regular, 8, 420, 755);
-            writeAt(stream, "Page " + pageNumber, regular, 8, 514, 34);
+            String compactSection = section.replace(" (continued)", " (cont.)");
+            writeRightAligned(stream, pdfText(ellipsize(compactSection, 36)), regular, 8, PDRectangle.LETTER.getWidth() - 54, 755);
+            writeRightAligned(stream, "Page " + pageNumber, regular, 8, PDRectangle.LETTER.getWidth() - 54, 34);
             y = 720;
         }
 
@@ -1464,11 +1733,11 @@ public class DocumentationExportRenderer {
             stream.fill();
             y -= 16;
             text(label.toUpperCase(Locale.ROOT), bold, 8, theme.primary(), 13);
-            text(body, regular, 9.2f, theme.ink(), 15);
+            text(body, regular, 10.5f, theme.ink(), 16);
             y -= 7;
         }
 
-        private void tocItem(String number, String title) throws IOException {
+        private void tocItem(String number, String title, int destinationPage) throws IOException {
             ensure(34, "Contents");
             stream.setNonStrokingColor(theme.soft());
             stream.addRect(54, y - 24, 504, 22);
@@ -1477,9 +1746,10 @@ public class DocumentationExportRenderer {
             stream.addRect(54, y - 24, 42, 22);
             stream.fill();
             stream.setNonStrokingColor(Color.WHITE);
-            writeAt(stream, number, bold, 7.5f, 66, y - 15);
+            writeAt(stream, number, bold, 8, 66, y - 15);
             stream.setNonStrokingColor(theme.ink());
-            writeAt(stream, pdfText(title), bold, 9.2f, 112, y - 15);
+            writeAt(stream, pdfText(ellipsize(title, 52)), bold, 10, 112, y - 15);
+            writeRightAligned(stream, String.valueOf(destinationPage), bold, 10, 542, y - 15);
             y -= 29;
         }
 
@@ -1514,6 +1784,13 @@ public class DocumentationExportRenderer {
             target.showText(pdfText(value));
             target.endText();
         }
+
+        private void writeRightAligned(PDPageContentStream target, String value, PDType1Font font, float size, float rightX, float targetY) throws IOException {
+            float width = font.getStringWidth(pdfText(value)) / 1000f * size;
+            writeAt(target, value, font, size, rightX - width, targetY);
+        }
+
+        private record TocEntry(String title, int pageNumber, PDPage page) { }
     }
 
     public record RenderedExport(String filename, String contentType, byte[] content) { }

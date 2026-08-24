@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { GoogleOAuthProvider } from "@react-oauth/google";
 import { usePathname, useRouter } from "next/navigation";
 import { MotionConfig } from "framer-motion";
-import { FolderKanban, LayoutDashboard, Plus, Settings, ShieldCheck } from "lucide-react";
+import { FolderKanban, Plus, Settings, ShieldCheck } from "lucide-react";
 import { LocaleProvider } from "@/providers/LocaleProvider";
 import { ThemeProvider, type Theme } from "@/providers/ThemeProvider";
 import { useAuthStore } from "@/store/authStore";
@@ -39,13 +39,13 @@ export default function ClientProviders({
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const isApplicationRoute = /^(\/dashboard|\/projects|\/settings|\/admin)(?:\/|$)/.test(pathname);
   const isAuthRoute = /^(\/login|\/logout|\/register|\/forgot-password|\/reset-password|\/verify-email)(?:\/|$)/.test(pathname);
+  const isProjectDetailRoute = /^\/projects\/[^/]+$/.test(pathname);
   // The authenticated shell deliberately includes project detail routes so the
   // sidebar, utility header, theme toggle, and mobile navigation stay unified.
   const usesWorkspaceChrome = isApplicationRoute;
   const usesMarketingChrome = !isApplicationRoute && !isAuthRoute;
   const commandActions = useMemo<CommandPaletteAction[]>(() => {
     const actions: CommandPaletteAction[] = [
-      { id: "overview", label: "Open overview", description: "Go to the workspace command center", group: "Navigate", icon: <LayoutDashboard className="h-4 w-4" />, onSelect: () => router.push("/dashboard") },
       { id: "projects", label: "Open projects", description: "Browse and filter project workspaces", group: "Navigate", icon: <FolderKanban className="h-4 w-4" />, onSelect: () => router.push("/projects") },
       { id: "new-project", label: "Create a project", description: "Start a guided documentation workspace", group: "Create", icon: <Plus className="h-4 w-4" />, shortcut: "N", onSelect: () => router.push("/projects/new") },
       { id: "settings", label: "Open settings", description: "Manage profile and account security", group: "Navigate", icon: <Settings className="h-4 w-4" />, onSelect: () => router.push("/settings") },
@@ -55,12 +55,12 @@ export default function ClientProviders({
   }, [router, user?.role]);
 
   return (
-    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID} locale="en">
       <ThemeProvider initialTheme={initialTheme}>
         <MotionConfig reducedMotion="user">
           <LocaleProvider>
             <AuthInitializer>
-              <div className={`min-h-screen flex flex-col relative ${usesWorkspaceChrome ? "workspace-shell" : ""}`}>
+              <div className={`min-h-screen flex flex-col relative ${usesWorkspaceChrome ? "workspace-shell" : ""} ${isProjectDetailRoute ? "project-detail-shell" : ""}`}>
                 {usesMarketingChrome && <><ScrollProgressBar /><Navbar /></>}
                 {usesWorkspaceChrome && <WorkspaceHeader onOpenCommandPalette={() => setCommandPaletteOpen(true)} />}
                 <main className={usesWorkspaceChrome || isAuthRoute ? "flex-1" : "flex-1 pt-16"}>{children}</main>

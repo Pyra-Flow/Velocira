@@ -116,6 +116,14 @@ public class InterviewService {
             UUID projectId,
             UUID ownerId,
             InterviewDtos.AnswerRequest request) {
+        return recordAnswer(projectId, ownerId, request, false);
+    }
+
+    private InterviewDtos.SessionResponse recordAnswer(
+            UUID projectId,
+            UUID ownerId,
+            InterviewDtos.AnswerRequest request,
+            boolean replaceExistingMeaning) {
         InterviewSessionEntity session = lockedSession(projectId, ownerId);
         ProjectEntity project = session.getProject();
         ensureInterviewAllowed(project);
@@ -136,6 +144,17 @@ public class InterviewService {
             answerRepository.flush();
         }
 
+        String normalizedAnswer = normalizeAnswer(question, request);
+        if (!replaceExistingMeaning && existing != null
+                && existing.getAnswerText() != null && !existing.getAnswerText().isBlank()
+                && normalizedAnswer != null && !normalizedAnswer.isBlank()) {
+            normalizedAnswer = mergeAnswerMeaning(existing.getAnswerText(), normalizedAnswer);
+        }
+        JsonNode evidence = answerEvidence(question, request, plannedQuestion);
+        if (!replaceExistingMeaning && existing != null && evidence instanceof ObjectNode objectEvidence) {
+            objectEvidence.put("retainedPriorAnswerId", existing.getId().toString());
+        }
+
         InterviewAnswerEntity answer = InterviewAnswerEntity.builder()
                 .session(session)
                 .category(question.category())
@@ -143,11 +162,11 @@ public class InterviewService {
                 .questionText(question.questionText())
                 .whyWeAsk(question.whyWeAsk())
                 .disposition(request.disposition())
-                .answerText(normalizeAnswer(question, request))
+                .answerText(normalizedAnswer)
                 .revisionNumber(revision)
                 .current(true)
                 .source("USER")
-                .evidence(answerEvidence(question, request, plannedQuestion))
+                .evidence(evidence)
                 .build();
         answer = answerRepository.save(answer);
         refreshDerivedEvidence(session, answer);
@@ -172,7 +191,7 @@ public class InterviewService {
         if (!original.getQuestionKey().equals(request.questionKey().trim())) {
             throw new InterviewStateException("An answer can only be revised with its original interview question.");
         }
-        return submitAnswer(projectId, ownerId, request);
+        return recordAnswer(projectId, ownerId, request, true);
     }
 
     @Transactional
@@ -260,13 +279,19 @@ public class InterviewService {
     private void refreshDerivedEvidence(InterviewSessionEntity session, InterviewAnswerEntity answer) {
         List<AssumptionEntity> activeAssumptions = assumptionRepository
                 .findBySessionIdAndCategoryAndStatus(session.getId(), answer.getCategory(), AssumptionStatus.OPEN);
-        activeAssumptions.forEach(assumption -> assumption.setStatus(AssumptionStatus.RESOLVED));
-        assumptionRepository.saveAll(activeAssumptions);
+        List<AssumptionEntity> replacedAssumptions = activeAssumptions.stream()
+                .filter(assumption -> isEvidenceForQuestion(assumption.getSourceAnswerId(), answer.getQuestionKey()))
+                .peek(assumption -> assumption.setStatus(AssumptionStatus.RESOLVED))
+                .toList();
+        assumptionRepository.saveAll(replacedAssumptions);
 
         List<DecisionEntity> activeDecisions = decisionRepository
                 .findBySessionIdAndCategoryAndStatus(session.getId(), answer.getCategory(), DecisionStatus.ACTIVE);
-        activeDecisions.forEach(decision -> decision.setStatus(DecisionStatus.SUPERSEDED));
-        decisionRepository.saveAll(activeDecisions);
+        List<DecisionEntity> replacedDecisions = activeDecisions.stream()
+                .filter(decision -> isEvidenceForQuestion(decision.getSourceAnswerId(), answer.getQuestionKey()))
+                .peek(decision -> decision.setStatus(DecisionStatus.SUPERSEDED))
+                .toList();
+        decisionRepository.saveAll(replacedDecisions);
 
         if (answer.getDisposition() == InterviewAnswerDisposition.ANSWERED) {
             decisionRepository.save(DecisionEntity.builder()
@@ -297,6 +322,8 @@ public class InterviewService {
             InterviewSessionEntity session,
             List<InterviewAnswerEntity> answers,
             List<DiscoveryReadinessService.Finding> findings) {
+        Map<String, InterviewAnswerEntity> byQuestionKey = answers.stream()
+                .collect(Collectors.toMap(InterviewAnswerEntity::getQuestionKey, Function.identity(), (left, right) -> right));
         Map<InterviewCategory, InterviewAnswerEntity> byCategory = answers.stream()
                 .collect(Collectors.toMap(InterviewAnswerEntity::getCategory, Function.identity(), (left, right) -> right));
         Set<String> currentFindingKeys = findings.stream()
@@ -311,7 +338,10 @@ public class InterviewService {
                             .category(finding.category())
                             .origin("READINESS_RULE")
                             .build());
-            InterviewAnswerEntity source = byCategory.get(finding.category());
+            InterviewAnswerEntity source = byQuestionKey.get(sourceQuestionKey(finding.key()));
+            if (source == null) {
+                source = byCategory.get(finding.category());
+            }
             openQuestion.setSourceAnswerId(source == null ? null : source.getId());
             openQuestion.setQuestionText(finding.questionText());
             openQuestion.setReason(finding.reason());
@@ -498,16 +528,26 @@ public class InterviewService {
         if (request.disposition() != InterviewAnswerDisposition.ANSWERED) {
             return null;
         }
-        Map<String, String> labelsByKey = question.options().stream()
-                .collect(Collectors.toMap(DiscoveryQuestionCatalog.ChoiceOption::key,
-                        DiscoveryQuestionCatalog.ChoiceOption::label));
+        Map<String, DiscoveryQuestionCatalog.ChoiceOption> optionsByKey = question.options().stream()
+                .collect(Collectors.toMap(DiscoveryQuestionCatalog.ChoiceOption::key, Function.identity()));
         List<String> parts = new ArrayList<>(request.selectedOptionKeys().stream()
-                .map(labelsByKey::get)
+                .map(optionsByKey::get)
+                .map(this::confirmedOptionMeaning)
                 .toList());
         if (request.answerText() != null && !request.answerText().isBlank()) {
             parts.add(request.answerText().trim());
         }
         return String.join("; ", parts);
+    }
+
+    private String mergeAnswerMeaning(String previous, String addition) {
+        String retained = previous.trim();
+        String next = addition.trim();
+        if (retained.equalsIgnoreCase(next) || retained.toLowerCase(java.util.Locale.ROOT)
+                .contains(next.toLowerCase(java.util.Locale.ROOT))) {
+            return retained;
+        }
+        return retained + "; " + next;
     }
 
     private JsonNode answerEvidence(
@@ -529,11 +569,22 @@ public class InterviewService {
                 .filter(option -> request.selectedOptionKeys().contains(option.key()))
                 .forEach(option -> selectedOptions.addObject()
                         .put("key", option.key())
-                        .put("label", option.label()));
+                        .put("label", option.label())
+                        .put("description", option.description())
+                        .put("confirmedMeaning", confirmedOptionMeaning(option)));
         if (plannedQuestion != null && plannedQuestion.questionKey().equals(question.key())) {
             evidence.set("questionPlan", objectMapper.valueToTree(plannedQuestion));
         }
         return evidence;
+    }
+
+    private String confirmedOptionMeaning(DiscoveryQuestionCatalog.ChoiceOption option) {
+        String label = option.label().trim();
+        String description = option.description().trim();
+        if (description.toLowerCase(java.util.Locale.ROOT).startsWith(label.toLowerCase(java.util.Locale.ROOT))) {
+            return description;
+        }
+        return label + " — " + description;
     }
 
     private void ensureCurrentQuestionPlan(InterviewSessionEntity session) {
@@ -567,6 +618,25 @@ public class InterviewService {
         } catch (Exception ex) {
             return null;
         }
+    }
+
+    private boolean isEvidenceForQuestion(UUID sourceAnswerId, String questionKey) {
+        return sourceAnswerId != null && answerRepository.findById(sourceAnswerId)
+                .map(source -> source.getQuestionKey().equals(questionKey))
+                .orElse(false);
+    }
+
+    private String sourceQuestionKey(String findingKey) {
+        String source;
+        if (findingKey.startsWith("incomplete-")) {
+            source = findingKey.substring("incomplete-".length());
+            int facet = source.indexOf("-facet-");
+            return facet < 0 ? source : source.substring(0, facet);
+        }
+        if (findingKey.startsWith("required-")) {
+            return findingKey.substring("required-".length());
+        }
+        return findingKey;
     }
 
     private InterviewDtos.QuestionResponse answerQuestionPlan(InterviewAnswerEntity answer) {

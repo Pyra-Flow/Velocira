@@ -423,6 +423,19 @@ class SrsDiagram(BaseModel):
     status: Literal["CONFIRMED", "DERIVED", "RECOMMENDED", "UNRESOLVED"]
 
 
+class SrsApiOperation(BaseModel):
+    """Confirmed HTTP operation metadata consumed by canonical OpenAPI output."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    path: str = Field(
+        min_length=2,
+        max_length=300,
+        pattern=r"^/[A-Za-z0-9._~!$&'()*+,;=:@%{}/-]+$",
+    )
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+    operation_id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{2,120}$")
+
+
 class SrsRequirement(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     id: str = Field(pattern=r"^SRS-(?:BR|FR|NFR|SEC|PRIV|DATA|API|UX|ACC|OPS|TEST)-[0-9]{3,}$")
@@ -439,10 +452,12 @@ class SrsRequirement(BaseModel):
     actors: list[str] = Field(default_factory=list, max_length=20)
     preconditions: list[str] = Field(default_factory=list, max_length=20)
     trigger: str = Field(default="Confirmed workflow event", min_length=2, max_length=1_000)
+    success_result: str = Field(default="The stated acceptance outcome is observable.", min_length=8, max_length=2_000)
     failure_behavior: str = Field(default="Failure behavior requires review.", min_length=8, max_length=2_000)
     data_involved: list[str] = Field(default_factory=list, max_length=30)
     dependencies: list[str] = Field(default_factory=list, max_length=30)
     risks: list[str] = Field(default_factory=list, max_length=30)
+    api_operation: SrsApiOperation | None = None
     source_kind: Literal["CITATION", "ASSUMPTION"]
     source_detail: str = Field(min_length=5, max_length=2_000)
     verification_method: Literal["TEST", "ANALYSIS", "INSPECTION", "DEMONSTRATION"]
@@ -457,11 +472,12 @@ class SrsArtifact(BaseModel):
     generation_manifest: dict[str, Any] = Field(default_factory=dict)
     executive_summary: str = Field(default="Pending compiled executive summary.", min_length=20, max_length=8_000)
     scope: str = Field(min_length=20, max_length=6_000)
+    inclusions: list[str] = Field(default_factory=list, max_length=100)
     objectives: list[str] = Field(default_factory=list, max_length=30)
     stakeholders: list[str] = Field(default_factory=list, max_length=40)
     definitions: list[SrsRegisterItem] = Field(default_factory=list, max_length=80)
     source_registry: list[SrsRegisterItem] = Field(default_factory=list, max_length=40)
-    exclusions: list[str] = Field(default_factory=list, max_length=20)
+    exclusions: list[str] = Field(default_factory=list, max_length=100)
     assumptions: list[str] = Field(default_factory=list, max_length=30)
     open_questions: list[str] = Field(default_factory=list, max_length=30)
     narrative_sections: list[SrsNarrativeSection] = Field(default_factory=list, max_length=40)

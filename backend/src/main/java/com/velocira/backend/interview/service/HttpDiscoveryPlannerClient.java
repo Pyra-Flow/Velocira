@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.velocira.backend.generation.config.GenerationProperties;
 import com.velocira.backend.interview.dto.InterviewDtos;
+import com.velocira.backend.interview.exceptions.InterviewStateException;
 import com.velocira.backend.interview.model.InterviewAnswerEntity;
 import com.velocira.backend.interview.model.InterviewCategory;
 import com.velocira.backend.interview.model.OpenQuestionEntity;
@@ -43,8 +44,13 @@ public class HttpDiscoveryPlannerClient {
             Pattern.compile("^what (are )?the (quality goals|constraints|risks|integrations)", Pattern.CASE_INSENSITIVE),
             Pattern.compile("^what quality goals matter", Pattern.CASE_INSENSITIVE),
             Pattern.compile("^what constraints must we respect", Pattern.CASE_INSENSITIVE),
+            Pattern.compile("^what (is|are) (explicitly )?out of scope", Pattern.CASE_INSENSITIVE),
             Pattern.compile("^walk me through the most important user journey", Pattern.CASE_INSENSITIVE),
             Pattern.compile("^how will you know the project is successful", Pattern.CASE_INSENSITIVE));
+    private static final Set<String> GENERIC_PROJECT_TERMS = Set.of(
+            "app", "application", "build", "create", "described", "digital", "first", "platform",
+            "product", "project", "release", "service", "software", "solution", "system", "tool",
+            "user", "users", "web");
 
     public record EvidenceContext(
             @JsonProperty("source_id") UUID sourceId,
@@ -83,6 +89,10 @@ public class HttpDiscoveryPlannerClient {
                 .build();
     }
 
+    public boolean isEnabled() {
+        return properties.getAi().isDiscoveryPlannerEnabled();
+    }
+
     public Optional<PlannedQuestion> planQuestion(
             ProjectEntity project,
             List<InterviewAnswerEntity> answers,
@@ -113,7 +123,7 @@ public class HttpDiscoveryPlannerClient {
                     openQuestions.stream().filter(OpenQuestionEntity::isMaterial)
                             .map(OpenQuestionEntity::getQuestionKey).toList());
             HttpRequest.Builder request = HttpRequest.newBuilder(endpoint("/v1/discovery/plan"))
-                    .timeout(properties.getAi().getReadTimeout())
+                    .timeout(properties.getAi().getDiscoveryPlannerTimeout())
                     .header("Content-Type", "application/json")
                     .header("X-Correlation-Id", correlationId())
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)));
@@ -123,17 +133,31 @@ public class HttpDiscoveryPlannerClient {
             }
             HttpResponse<String> response = httpClient.send(request.build(), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                log.debug("Discovery planner returned HTTP {}; using deterministic context planner", response.statusCode());
-                return Optional.empty();
+                if (response.statusCode() == 429) {
+                    throw new InterviewStateException(
+                            "Discovery question generation is rate-limited right now. Please try again in a moment.");
+                }
+                if (response.statusCode() == 502) {
+                    throw new InterviewStateException(
+                            "The discovery model returned a plan that failed quality validation. Please try again.");
+                }
+                throw new InterviewStateException(
+                        "Discovery question generation is temporarily unavailable. Please try again.");
             }
             PlannerResponse body = objectMapper.readValue(response.body(), PlannerResponse.class);
-            return validate(body, candidates, sourceAnchors, project, answers);
+            Optional<PlannedQuestion> validated = validate(body, candidates, sourceAnchors, project, answers);
+            if (validated.isEmpty()) {
+                throw new InterviewStateException(
+                        "The discovery model returned an invalid question; no fallback question was saved.");
+            }
+            return validated;
         } catch (IOException ex) {
-            log.debug("Discovery planner is unavailable; using deterministic context planner: {}", ex.getMessage());
-            return Optional.empty();
+            throw new InterviewStateException(
+                    "Discovery question generation is temporarily unavailable; no fallback question was saved.");
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            return Optional.empty();
+            throw new InterviewStateException(
+                    "Discovery question generation was interrupted; no fallback question was saved.");
         }
     }
 
@@ -154,16 +178,18 @@ public class HttpDiscoveryPlannerClient {
             log.debug("Discovery planner attempted to leave the server-owned candidate set");
             return Optional.empty();
         }
-        String questionText = bounded(remote.questionText(), 20, 600);
-        String whyWeAsk = bounded(remote.whyWeAsk(), 10, 600);
+        String questionText = bounded(remote.questionText(), 35, 420);
+        String whyWeAsk = bounded(remote.whyWeAsk(), 25, 500);
         if (questionText == null || whyWeAsk == null || !questionText.endsWith("?")
                 || questionText.chars().filter(character -> character == '?').count() != 1
                 || questionText.split("\\s+").length > 55
                 || looksLikePromptLeak(questionText + " " + whyWeAsk)
-                || isGenericOrAwkward(questionText)
+                || isGenericOrAwkward(questionText, project)
+                || combinesUnrelatedDecisionFacets(questionText)
                 || !hasCategoryCoverage(candidate.category(), questionText)
+                || !hasProjectSpecificity(questionText, project)
                 || containsProjectTitle(questionText, project)
-                || isSemanticDuplicate(questionText, answers)
+                || isSemanticDuplicate(candidate.key(), questionText, answers)
                 || assertsUnsupportedCompliance(questionText + " " + whyWeAsk, project, answers)) {
             return Optional.empty();
         }
@@ -216,6 +242,7 @@ public class HttpDiscoveryPlannerClient {
         }
         List<DiscoveryQuestionCatalog.ChoiceOption> options = new ArrayList<>();
         Set<String> keys = new LinkedHashSet<>();
+        Set<String> labels = new LinkedHashSet<>();
         for (ChoiceContext option : remote.stream().limit(6).toList()) {
             if (option == null || option.key() == null || !OPTION_KEY.matcher(option.key()).matches()
                     || !keys.add(option.key())) {
@@ -223,14 +250,20 @@ public class HttpDiscoveryPlannerClient {
             }
             String label = bounded(option.label(), 1, 120);
             String description = bounded(option.description(), 1, 300);
-            boolean shallow = label != null && Set.of("yes", "no", "maybe", "users", "customers", "admins")
+            boolean shallow = label != null && Set.of(
+                            "yes", "no", "maybe", "users", "customers", "admins", "administrators",
+                            "customer booking first", "access only while needed",
+                            "detect quickly and recover", "platform or technology is fixed",
+                            "operational owner has final authority")
                     .contains(label.toLowerCase());
+            boolean duplicateLabel = label != null && !labels.add(label.toLowerCase());
             boolean duplicateUncertainty = label != null && !option.key().equals("not-decided")
                     && Pattern.compile("\\b(not decided|not yet decided|undecided|unknown|unsure|maybe)\\b",
                             Pattern.CASE_INSENSITIVE).matcher(label).find();
-            if (label != null && description != null && description.split("\\s+").length >= 5
-                    && !shallow && !duplicateUncertainty
+            if (label != null && description != null
+                    && !shallow && !duplicateLabel && !duplicateUncertainty
                     && !hasUnsupportedNumericClaim(label + " " + description, project, answers)
+                    && !assertsUnsupportedDomainTerm(label + " " + description, project, answers)
                     && !looksLikePromptLeak(label + " " + description)) {
                 options.add(new DiscoveryQuestionCatalog.ChoiceOption(option.key(), label, description));
             }
@@ -292,10 +325,45 @@ public class HttpDiscoveryPlannerClient {
                 .toList();
     }
 
-    private boolean isGenericOrAwkward(String question) {
+    private boolean isGenericOrAwkward(String question, ProjectEntity project) {
         String lowered = question.toLowerCase();
-        return lowered.contains("roles within") || GENERIC_QUESTIONS.stream()
-                .anyMatch(pattern -> pattern.matcher(question).find());
+        if (lowered.contains("roles within")) {
+            return true;
+        }
+        Set<String> projectTerms = distinctiveProjectTerms(project);
+        long specificityMatches = semanticTerms(question).stream().filter(projectTerms::contains).count();
+        return GENERIC_QUESTIONS.stream().anyMatch(pattern -> pattern.matcher(question).find())
+                && specificityMatches < Math.min(2, projectTerms.size());
+    }
+
+    private boolean hasProjectSpecificity(String question, ProjectEntity project) {
+        Set<String> projectTerms = distinctiveProjectTerms(project);
+        int requiredMatches = Math.min(2, projectTerms.size());
+        return requiredMatches == 0
+                || semanticTerms(question).stream().filter(projectTerms::contains).count() >= requiredMatches;
+    }
+
+    private Set<String> distinctiveProjectTerms(ProjectEntity project) {
+        String context = String.join(" ",
+                project.getDescription() == null ? "" : project.getDescription(),
+                project.getIndustry() == null ? "" : project.getIndustry(),
+                project.getTargetAudience() == null ? "" : project.getTargetAudience(),
+                project.getTechStack() == null ? "" : project.getTechStack());
+        Set<String> terms = new java.util.HashSet<>(semanticTerms(context));
+        terms.removeAll(GENERIC_PROJECT_TERMS);
+        terms.removeAll(semanticTerms(project.getName()));
+        return Set.copyOf(terms);
+    }
+
+    private boolean combinesUnrelatedDecisionFacets(String question) {
+        String lowered = question.toLowerCase();
+        List<List<String>> axes = List.of(
+                List.of("actor", "role", "who", "customer", "operator", "professional"),
+                List.of("permission", "access", "view", "authorize", "approval", "override"),
+                List.of("retention", "retain", "delete", "deletion", "archive"),
+                List.of("lifecycle", "state", "status", "expire", "transition", "correction"));
+        long matchedAxes = axes.stream().filter(axis -> axis.stream().anyMatch(lowered::contains)).count();
+        return matchedAxes >= 3;
     }
 
     private boolean containsProjectTitle(String question, ProjectEntity project) {
@@ -307,21 +375,18 @@ public class HttpDiscoveryPlannerClient {
         String value = question.toLowerCase();
         return switch (category) {
             case SCOPE -> containsAny(value, "first release", "initial release", "mvp", "launch")
-                    && containsAny(value, "wait", "defer", "exclude", "out of scope", "boundary", "before adding");
-            case WORKFLOWS -> containsAny(value, "fail", "conflict", "reject", "decline", "expire", "timeout",
-                    "non-response", "unanswered", "incomplete")
-                    && containsAny(value, "recover", "resolve", "retry", "escalat", "hold", "alternative", "next");
+                    ;
+            case WORKFLOWS -> containsAny(value, "state", "status", "trigger", "start", "after", "when",
+                    "fail", "conflict", "recover", "complete");
             case QUALITY_GOALS -> Pattern.compile(
                     "(\\bwhat\\b[^?]{0,90}\\b(measurable\\s+)?(target|threshold|maximum|minimum)\\b"
                             + "|\\bhow\\s+(fast|quickly|often|many|reliably)\\b"
-                            + "|\\bhow\\b[^?]{0,50}\\bmeasur|\\bwithin\\s+how\\b|\\bp95\\b)")
+                            + "|\\bhow\\b[^?]{0,50}\\bmeasur|\\bwithin\\s+how\\b|\\bp95\\b|\\bfailure\\b)")
                     .matcher(value).find();
-            case METRICS -> containsAny(value, "baseline", "current", "today", "existing", "%")
-                    && containsAny(value, "target", "goal", "reduce", "increase", "below", "above")
-                    && containsAny(value, "review period", "window", "weeks", "months", "after launch",
-                            "by when", "timeframe");
-            case CONSTRAINTS -> containsAny(value, "fixed", "non-negotiable", "strictly", "cannot move", "govern")
-                    && containsAny(value, "move", "flexible", "may shift", "may shrink", "what must change");
+            case METRICS -> containsAny(value, "baseline", "target", "numerator", "denominator", "rate",
+                    "window", "measure", "%");
+            case CONSTRAINTS -> containsAny(value, "fixed", "non-negotiable", "strictly", "cannot move",
+                    "govern", "constraint", "boundary");
             default -> true;
         };
     }
@@ -330,9 +395,15 @@ public class HttpDiscoveryPlannerClient {
         return java.util.Arrays.stream(terms).anyMatch(value::contains);
     }
 
-    private boolean isSemanticDuplicate(String question, List<InterviewAnswerEntity> answers) {
+    private boolean isSemanticDuplicate(
+            String questionKey,
+            String question,
+            List<InterviewAnswerEntity> answers) {
         Set<String> current = semanticTerms(question);
         for (InterviewAnswerEntity answer : answers) {
+            if (questionKey.equals(answer.getQuestionKey())) {
+                continue;
+            }
             Set<String> prior = semanticTerms(answer.getQuestionText());
             Set<String> union = new java.util.HashSet<>(current);
             union.addAll(prior);
@@ -349,8 +420,9 @@ public class HttpDiscoveryPlannerClient {
         if (value == null) {
             return Set.of();
         }
-        Set<String> stop = Set.of("the", "and", "for", "that", "with", "what", "which", "who", "when",
-                "how", "should", "from", "your", "this", "will", "are", "does", "into");
+        Set<String> stop = Set.of("a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for",
+                "from", "how", "in", "is", "it", "of", "on", "or", "should", "that", "the", "this", "to",
+                "what", "when", "which", "who", "will", "with", "your");
         return Pattern.compile("[a-z0-9]+").matcher(value.toLowerCase()).results()
                 .map(java.util.regex.MatchResult::group)
                 .filter(token -> token.length() > 2 && !stop.contains(token))
@@ -384,7 +456,23 @@ public class HttpDiscoveryPlannerClient {
                 .anyMatch(term -> output.contains(term) && !context.contains(term)
                         && !output.matches(".*(if|whether|might|could|example|such as).*"
                                 + Pattern.quote(term) + ".*"));
-        return unsupportedCompliance || unsupportedImplementation;
+        return unsupportedCompliance || unsupportedImplementation
+                || assertsUnsupportedDomainTerm(value, project, answers);
+    }
+
+    private boolean assertsUnsupportedDomainTerm(
+            String value,
+            ProjectEntity project,
+            List<InterviewAnswerEntity> answers) {
+        StringBuilder confirmed = new StringBuilder()
+                .append(project.getDescription()).append(' ')
+                .append(project.getIndustry()).append(' ')
+                .append(project.getTargetAudience()).append(' ');
+        answers.stream().map(InterviewAnswerEntity::getAnswerText).filter(java.util.Objects::nonNull)
+                .forEach(answer -> confirmed.append(answer).append(' '));
+        String output = value.toLowerCase();
+        String context = confirmed.toString().toLowerCase();
+        return output.contains("cleaner") && !context.contains("cleaner");
     }
 
     private List<String> selectedOptionKeys(InterviewAnswerEntity answer) {
@@ -517,7 +605,9 @@ public class HttpDiscoveryPlannerClient {
             @JsonProperty("source_context") List<String> sourceContext,
             @JsonProperty("confirmed_context_used") List<String> confirmedContextUsed,
             @JsonProperty("assumptions_to_validate") List<String> assumptionsToValidate,
-            @JsonProperty("candidate_scores") List<CandidateScoreContext> candidateScores) {
+            @JsonProperty("candidate_scores") List<CandidateScoreContext> candidateScores,
+            List<String> suggestions,
+            List<String> assumptions) {
     }
 
     private record CandidateScoreContext(

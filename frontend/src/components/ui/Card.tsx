@@ -18,7 +18,7 @@ export default function Card({
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-md border border-border bg-card p-5",
+        "relative overflow-hidden rounded-sm border border-border bg-card p-5",
         "transition-[border-color,background-color] duration-150",
         hover && "hover:border-accent/55 hover:bg-card-hover",
         glow && "border-accent/40",

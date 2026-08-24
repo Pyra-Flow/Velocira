@@ -23,10 +23,12 @@ class Settings:
     discovery_model: str = "velocira-deterministic-v1"
     fallback_model: str = ""
     gemini_api_key: str = ""
+    gemini_api_key_2: str = ""
+    gemini_api_key_3: str = ""
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
-    provider_timeout_seconds: float = 180.0
+    provider_timeout_seconds: float = 600.0
     internal_service_token: str = ""
-    max_input_bytes: int = 65_536
+    max_input_bytes: int = 524_288
     log_level: str = "INFO"
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "velocira_project_evidence_v1"
@@ -35,7 +37,7 @@ class Settings:
 
     @classmethod
     def from_environment(cls) -> "Settings":
-        raw_max_input_bytes = os.getenv("AI_SERVICE_MAX_INPUT_BYTES", "65536")
+        raw_max_input_bytes = os.getenv("AI_SERVICE_MAX_INPUT_BYTES", "524288")
         try:
             max_input_bytes = int(raw_max_input_bytes)
         except ValueError as exc:
@@ -52,7 +54,7 @@ class Settings:
         if embedding_dimensions < 128 or embedding_dimensions > 3072:
             raise ValueError("AI_SERVICE_EMBEDDING_DIMENSIONS must be between 128 and 3072")
 
-        raw_provider_timeout = os.getenv("AI_SERVICE_PROVIDER_TIMEOUT_SECONDS", "180")
+        raw_provider_timeout = os.getenv("AI_SERVICE_PROVIDER_TIMEOUT_SECONDS", "600")
         try:
             provider_timeout_seconds = float(raw_provider_timeout)
         except ValueError as exc:
@@ -70,6 +72,8 @@ class Settings:
             ),
             fallback_model=os.getenv("AI_SERVICE_FALLBACK_MODEL", ""),
             gemini_api_key=os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")),
+            gemini_api_key_2=os.getenv("GEMINI_API_KEY_2", ""),
+            gemini_api_key_3=os.getenv("GEMINI_API_KEY_3", ""),
             gemini_base_url=os.getenv("AI_SERVICE_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/"),
             provider_timeout_seconds=provider_timeout_seconds,
             internal_service_token=os.getenv("AI_SERVICE_INTERNAL_TOKEN", ""),
@@ -84,3 +88,12 @@ class Settings:
     @property
     def production_like(self) -> bool:
         return self.environment in {"production", "staging"}
+
+    @property
+    def gemini_api_keys(self) -> tuple[str, ...]:
+        """Return configured Gemini keys in priority order without duplicates."""
+        return tuple(dict.fromkeys(
+            key.strip()
+            for key in (self.gemini_api_key, self.gemini_api_key_2, self.gemini_api_key_3)
+            if key.strip()
+        ))

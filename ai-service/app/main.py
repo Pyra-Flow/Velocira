@@ -285,6 +285,7 @@ def create_app(
                     evidence=[item.model_dump(mode="json") for item in payload.evidence],
                     candidate_questions=candidates,
                     source_anchors=list(dict.fromkeys(source_anchors)),
+                    validation_request=payload,
                     correlation_id=correlation_id,
                 )
                 result = plan_for_generated_question(
@@ -293,14 +294,30 @@ def create_app(
                     planner="gemini-context-planner-v3",
                     model=planned.model or provider_instance.model,
                 )
-            except (AiServiceError, ValueError) as exc:
-                # Free-tier quota or provider outages never stop discovery: the
-                # deterministic catalog remains an explicit safe fallback.
+            except AiServiceError as exc:
+                if exc.code not in {
+                    ErrorCode.PROVIDER_INVALID_OUTPUT,
+                    ErrorCode.PROVIDER_RATE_LIMIT,
+                    ErrorCode.PROVIDER_TIMEOUT,
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                }:
+                    raise
+                # Discovery always begins with a server-owned, quality-validated
+                # deterministic plan. If the live author cannot improve it after
+                # its bounded retries, preserve that safe plan instead of making
+                # project creation unavailable.
                 logger.warning(
-                    "discovery_planner_fallback reason=%s correlation_id=%s",
-                    exc.code.value if isinstance(exc, AiServiceError) else "invalid_contextual_question",
+                    "discovery_live_planner_fallback code=%s project_id=%s correlation_id=%s",
+                    exc.code.value,
+                    payload.project.id,
                     correlation_id,
                 )
+            except ValueError as exc:
+                raise AiServiceError(
+                    ErrorCode.PROVIDER_INVALID_OUTPUT,
+                    "The discovery model returned a question that failed the quality contract.",
+                    status_code=502,
+                ) from exc
         logger.info(
             "discovery_question_planned project_id=%s planner=%s correlation_id=%s",
             payload.project.id,
@@ -350,6 +367,7 @@ def create_app(
         internal_service_token: Annotated[str | None, Header(alias="X-Internal-Token")] = None,
     ) -> SrsGenerationResponse:
         _require_ready_and_authorized(request, internal_service_token)
+        _enforce_srs_input_limit(payload, request.app.state.settings.max_input_bytes)
         artifact, validation, model = await generate_srs(
             payload, request.app.state.provider, correlation_id=request.state.correlation_id
         )
@@ -407,6 +425,18 @@ def _enforce_input_limit(payload: GenerationRequest, max_input_bytes: int) -> No
         raise AiServiceError(
             ErrorCode.INVALID_REQUEST,
             "The generation input exceeds the configured size limit.",
+            status_code=413,
+        )
+
+
+def _enforce_srs_input_limit(payload: SrsGenerationRequest, max_input_bytes: int) -> None:
+    import json
+
+    encoded = json.dumps(payload.model_dump(mode="json"), ensure_ascii=False, default=str).encode("utf-8")
+    if len(encoded) > max_input_bytes:
+        raise AiServiceError(
+            ErrorCode.INVALID_REQUEST,
+            "The SRS generation input exceeds the configured size limit.",
             status_code=413,
         )
 

@@ -16,7 +16,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0A1020",
+  themeColor: "#f5f5f7",
 };
 
 export default async function RootLayout({
@@ -28,9 +28,7 @@ export default async function RootLayout({
   const themeCookie = cookieStore.get("theme")?.value;
 
   type Theme = "dark" | "light";
-  // Signal Forge is deliberately dark-first. A saved light preference still
-  // wins, but a first visit starts in the polished primary theme.
-  const initialTheme: Theme = themeCookie === "light" ? "light" : "dark";
+  const initialTheme: Theme = themeCookie === "dark" ? "dark" : "light";
 
   return (
     <html

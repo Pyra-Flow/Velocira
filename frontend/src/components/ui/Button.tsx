@@ -24,9 +24,9 @@ const variants = {
 };
 
 const sizes = {
-  sm: "min-h-8 px-3 py-1 text-xs rounded-md",
-  md: "min-h-10 px-4 py-2 text-sm rounded-md",
-  lg: "min-h-11 px-5 py-2.5 text-sm rounded-md",
+  sm: "min-h-9 px-3 py-1.5 text-xs rounded-sm",
+  md: "min-h-11 px-4 py-2.5 text-sm rounded-sm",
+  lg: "min-h-12 px-5 py-3 text-sm rounded-sm",
 };
 
 const Button = forwardRef<HTMLButtonElement, ButtonProps>(
@@ -47,7 +47,7 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         ref={ref}
         className={cn(
-          "inline-flex items-center justify-center gap-2 font-semibold tracking-[0.01em] transition-colors duration-150 focus-ring cursor-pointer",
+          "inline-flex items-center justify-center gap-2 font-semibold tracking-[0.01em] transition-[background-color,border-color,color,transform] duration-150 focus-ring cursor-pointer active:translate-y-px",
           "disabled:cursor-not-allowed disabled:opacity-50",
           variants[variant],
           sizes[size],

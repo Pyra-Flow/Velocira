@@ -224,12 +224,6 @@ export default function AdminUsersPage() {
     [search]
   );
 
-  useEffect(() => {
-    if (isAuthenticated && user?.role === "ADMIN") {
-      fetchUsers(0);
-    }
-  }, [isAuthenticated, user?.role, fetchUsers]);
-
   /* ---- Debounced search ---- */
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -238,8 +232,7 @@ export default function AdminUsersPage() {
       }
     }, 300);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search]);
+  }, [isAuthenticated, user?.role, fetchUsers]);
 
   const activeDialog = viewUser ? "details" : deleteTarget ? "delete" : null;
 

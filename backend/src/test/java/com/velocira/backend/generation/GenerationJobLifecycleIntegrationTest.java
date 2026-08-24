@@ -26,6 +26,10 @@ import com.velocira.backend.generation.service.GenerationHashing;
 import com.velocira.backend.generation.service.GenerationJobService;
 import com.velocira.backend.interview.model.InterviewSessionEntity;
 import com.velocira.backend.interview.model.InterviewSessionStatus;
+import com.velocira.backend.interview.model.InterviewAnswerDisposition;
+import com.velocira.backend.interview.model.InterviewAnswerEntity;
+import com.velocira.backend.interview.model.InterviewCategory;
+import com.velocira.backend.interview.repository.InterviewAnswerRepository;
 import com.velocira.backend.interview.repository.InterviewSessionRepository;
 import com.velocira.backend.project.model.ProjectEntity;
 import com.velocira.backend.project.model.ProjectStatus;
@@ -88,6 +92,9 @@ class GenerationJobLifecycleIntegrationTest {
 
     @Autowired
     private InterviewSessionRepository interviewSessionRepository;
+
+    @Autowired
+    private InterviewAnswerRepository interviewAnswerRepository;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -228,15 +235,72 @@ class GenerationJobLifecycleIntegrationTest {
                 .build());
         project.setStatus(ProjectStatus.READY_FOR_GENERATION);
         project = projectRepository.save(project);
-        interviewSessionRepository.save(InterviewSessionEntity.builder()
+        List<ConfirmedDiscoveryAnswer> confirmedAnswers = List.of(
+                new ConfirmedDiscoveryAnswer(
+                        InterviewCategory.PROBLEM,
+                        "problem",
+                        "problem",
+                        "The user experiences delayed durable generation, and successful artifact publication time should improve."),
+                new ConfirmedDiscoveryAnswer(
+                        InterviewCategory.USERS,
+                        "users",
+                        "users",
+                        "The project owner has authority to decide and accept the generated artifact outcome."),
+                new ConfirmedDiscoveryAnswer(
+                        InterviewCategory.SCOPE,
+                        "scope",
+                        "scope",
+                        "The first release completes one accepted artifact result from a submitted generation request."),
+                new ConfirmedDiscoveryAnswer(
+                        InterviewCategory.WORKFLOWS,
+                        "workflows",
+                        "workflows",
+                        "When the user submits a generation request, the system enters pending status; the system completes with an accepted result, and after failure it retries or reports an error for recovery."),
+                new ConfirmedDiscoveryAnswer(
+                        InterviewCategory.QUALITY_GOALS,
+                        "quality",
+                        "qualityTargets",
+                        "Every generation failure remains visible, and zero successful artifacts may be lost or marked accepted incorrectly."),
+                new ConfirmedDiscoveryAnswer(
+                        InterviewCategory.CONSTRAINTS,
+                        "constraints",
+                        "constraints",
+                        "The platform boundary is fixed to responsive web for the first release; that exact scope cannot move."),
+                new ConfirmedDiscoveryAnswer(
+                        InterviewCategory.METRICS,
+                        "metrics",
+                        "metrics",
+                        "The numerator is the count of successful accepted artifacts, the denominator is total requests, and the target is 100 percent in each weekly window."));
+        var canonicalBrief = objectMapper.createObjectNode();
+        confirmedAnswers.forEach(answer -> canonicalBrief.put(answer.briefKey(), answer.answerText()));
+        InterviewSessionEntity session = interviewSessionRepository.save(InterviewSessionEntity.builder()
                 .project(project)
                 .owner(owner)
                 .status(InterviewSessionStatus.CONFIRMED)
-                .canonicalBrief(objectMapper.createObjectNode())
-                .readinessSnapshot(objectMapper.createObjectNode().put("generationReady", true))
+                .canonicalBrief(canonicalBrief)
+                .readinessSnapshot(objectMapper.createObjectNode()
+                        .put("minimumComplete", true)
+                        .put("generationReady", true)
+                        .put("readinessBasis", "material-decision-coverage"))
                 .briefVersion(1)
                 .confirmedAt(Instant.now())
                 .build());
+        // The production readiness check intentionally recomputes eligibility
+        // from persisted answers instead of trusting this denormalized snapshot.
+        // Seed facet-complete evidence using the exact catalog question keys.
+        for (ConfirmedDiscoveryAnswer answer : confirmedAnswers) {
+            interviewAnswerRepository.save(InterviewAnswerEntity.builder()
+                    .session(session)
+                    .category(answer.category())
+                    .questionKey(answer.questionKey())
+                    .questionText("Confirmed " + answer.category().name() + " question")
+                    .whyWeAsk("Required evidence for the durable generation lifecycle test.")
+                    .disposition(InterviewAnswerDisposition.ANSWERED)
+                    .answerText(answer.answerText())
+                    .source("USER")
+                    .evidence(objectMapper.createObjectNode())
+                    .build());
+        }
         return new TestProject(owner, project);
     }
 
@@ -261,6 +325,13 @@ class GenerationJobLifecycleIntegrationTest {
     }
 
     private record TestProject(UserEntity owner, ProjectEntity project) {
+    }
+
+    private record ConfirmedDiscoveryAnswer(
+            InterviewCategory category,
+            String questionKey,
+            String briefKey,
+            String answerText) {
     }
 
     @TestConfiguration

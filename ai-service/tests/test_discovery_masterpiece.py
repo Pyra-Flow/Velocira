@@ -165,9 +165,9 @@ def test_multistep_transcripts_remain_specific_reviewable_and_non_repetitive(sce
         assert "not-decided" in options
         assert len(options) >= 4
     grounding_phrases = ("priority is", "as the priority", "release focus", "already prioritized",
-                         "priority of", "boundary around", "To measure")
+                         "priority of", "boundary around")
     for _, question, _ in transcript[1:]:
-        assert any(phrase in question for phrase in grounding_phrases)
+        assert not any(phrase in question.casefold() for phrase in grounding_phrases)
 
 
 def test_adaptive_depth_is_shorter_for_simple_than_complex_or_regulated_projects() -> None:
@@ -284,6 +284,150 @@ def test_quality_gate_rejects_project_name_pasted_into_a_generic_question() -> N
         plan_for_generated_question(payload, generated, planner="test", model="test")
 
 
+def test_every_fallback_question_and_answer_option_uses_project_context() -> None:
+    payload = DiscoveryPlanningRequest(
+        project=DiscoveryProjectContext(
+            id=uuid4(),
+            name="RotorProof",
+            description="A drone inspection workflow for wind-turbine field technicians and safety reviewers.",
+            type="WEB_APP",
+            industry="Renewable energy",
+            target_audience="wind-turbine field technicians and safety reviewers",
+        ),
+        candidate_questions=_candidates(CORE),
+    )
+
+    result = plan_next_question(payload)
+
+    assert result.next_question is not None
+    project_terms = {"drone", "inspection", "wind", "turbine", "technicians", "safety", "renewable", "energy"}
+    assert any(term in result.next_question.question_text.casefold() for term in project_terms)
+    for option in result.next_question.options:
+        rendered = (option.label + " " + option.description).casefold()
+        assert any(term in rendered for term in project_terms)
+
+
+def test_deterministic_options_carry_complete_operational_meaning() -> None:
+    payload = DiscoveryPlanningRequest(
+        project=_project(SCENARIOS["simple"]),
+        candidate_questions=_candidates(CORE),
+    )
+    forbidden_labels = {
+        "customer booking first", "access only while needed", "detect quickly and recover",
+        "platform or technology is fixed", "operational owner has final authority",
+    }
+
+    for candidate in payload.candidate_questions:
+        result = plan_for_selected_key(payload, candidate.key, planner="test", model="deterministic")
+        assert result.next_question is not None
+        assert len(result.next_question.options) >= 4
+        for option in result.next_question.options:
+            assert option.label.casefold() not in forbidden_labels
+            assert len(option.description.split()) >= 7
+            assert len(f"{option.label} {option.description}".split()) >= 10
+
+
+def test_targeted_open_question_is_used_for_the_exact_missing_facet() -> None:
+    payload = DiscoveryPlanningRequest.model_validate({
+        "project": _project(SCENARIOS["simple"]).model_dump(mode="json"),
+        "answers": [{
+            "question_key": "workflows",
+            "category": "WORKFLOWS",
+            "disposition": "ANSWERED",
+            "question_text": "What exact event starts the booking workflow?",
+            "answer_text": "When a customer requests a slot, the booking enters PENDING.",
+        }],
+        "open_questions": [{
+            "key": "incomplete-workflows-facet-success-outcome",
+            "category": "WORKFLOWS",
+            "question_text": "Which booking state proves the customer request succeeded?",
+            "reason": "The success outcome is not confirmed.",
+            "risk_level": "HIGH",
+            "material": True,
+        }],
+        "candidate_questions": [item.model_dump(mode="json") for item in _candidates({"WORKFLOWS"})],
+    })
+
+    result = plan_next_question(payload)
+
+    assert result.next_question is not None
+    assert result.next_question.key == "workflows"
+    assert "which booking state proves the customer request succeeded" in result.next_question.question_text.casefold()
+    assert "permissions" not in result.next_question.question_text.casefold()
+    assert "retention" not in result.next_question.question_text.casefold()
+
+
+def test_targeted_follow_up_may_refine_the_same_question_key_without_false_duplicate() -> None:
+    payload = DiscoveryPlanningRequest.model_validate({
+        "project": _project(SCENARIOS["simple"]).model_dump(mode="json"),
+        "answers": [{
+            "question_key": "constraints",
+            "category": "CONSTRAINTS",
+            "disposition": "ANSWERED",
+            "question_text": "Which deployment boundary must govern the first release?",
+            "answer_text": "The browser-based web platform is fixed.",
+        }],
+        "open_questions": [{
+            "key": "incomplete-constraints-facet-fixed-value",
+            "category": "CONSTRAINTS",
+            "question_text": "Which deployment boundary must govern the first release?",
+            "reason": "The exact fixed platform remains incomplete.",
+            "risk_level": "HIGH",
+            "material": True,
+        }],
+        "candidate_questions": [item.model_dump(mode="json") for item in _candidates({"CONSTRAINTS"})],
+    })
+
+    result = plan_next_question(payload)
+
+    assert result.next_question is not None
+    assert result.next_question.key == "constraints"
+
+
+
+def test_generated_question_rejects_compound_actor_access_retention_and_lifecycle_inventory() -> None:
+    payload = DiscoveryPlanningRequest(
+        project=_project(SCENARIOS["simple"]),
+        candidate_questions=[next(item for item in _candidates({"ENTITIES"}) if item.key == "entities")],
+    )
+    generated = {
+        "key": "entities",
+        "category": "ENTITIES",
+        "question_text": "Which cleaners may view booking addresses, who owns retention, and when are those records deleted?",
+        "why_we_ask": "The answer would mix several independent data decisions that require separate accountable evidence.",
+        "options": [
+            {"key": "one", "label": "Owner-controlled access", "description": "Requires the named owner to approve every booking-address access grant."},
+            {"key": "two", "label": "State-controlled access", "description": "Keeps booking-address visibility limited to the active service responsibility."},
+            {"key": "three", "label": "Policy-controlled access", "description": "Requires a versioned policy and records every booking-address access decision."},
+            {"key": "not-decided", "label": "Not decided yet", "description": "Keeps the requirement as an explicit unresolved product decision."},
+        ],
+    }
+
+    with pytest.raises(ValueError, match="unrelated decision facets"):
+        plan_for_generated_question(payload, generated, planner="test", model="test")
+
+
+def test_quality_gate_rejects_polished_but_project_agnostic_question() -> None:
+    scenario = SCENARIOS["simple"]
+    payload = DiscoveryPlanningRequest(
+        project=_project(scenario),
+        candidate_questions=_candidates(CORE),
+    )
+    generated = {
+        "key": "problem",
+        "category": "PROBLEM",
+        "question_text": "Which operational hand-off causes the most avoidable rework today, and what outcome should improve first?",
+        "why_we_ask": "The answer establishes a concrete outcome before features, estimates, and implementation choices.",
+        "selection_reason": "The problem anchors every downstream decision.",
+        "missing_requirement": "A prioritized outcome.",
+        "source_context": ["project:description"],
+        "options": [option.model_dump(mode="json") for option in plan_next_question(payload).next_question.options],
+    }
+
+    with pytest.raises(ValueError, match="distinctive project"):
+        plan_for_generated_question(payload, generated, planner="test", model="test")
+
+
 def test_generated_planner_cannot_skip_the_highest_ranked_question() -> None:
     scenario = SCENARIOS["simple"]
     payload = DiscoveryPlanningRequest(
@@ -309,7 +453,7 @@ def test_generated_planner_cannot_skip_the_highest_ranked_question() -> None:
         plan_for_generated_question(payload, generated, planner="test", model="test")
 
 
-def test_generated_options_cannot_invent_targets_or_duplicate_uncertainty() -> None:
+def test_generated_options_fail_closed_instead_of_replacing_invalid_decisions() -> None:
     scenario = SCENARIOS["simple"]
     payload = DiscoveryPlanningRequest(
         project=_project(scenario),
@@ -331,13 +475,8 @@ def test_generated_options_cannot_invent_targets_or_duplicate_uncertainty() -> N
         ],
     }
 
-    result = plan_for_generated_question(payload, generated, planner="test", model="test")
-
-    assert result.next_question is not None
-    option_keys = {option.key for option in result.next_question.options}
-    assert "invented-target" not in option_keys
-    assert "unsure" not in option_keys
-    assert option_keys == {"availability-conflicts", "slow-confirmation", "missed-follow-up", "not-decided"}
+    with pytest.raises(ValueError, match="decision support"):
+        plan_for_generated_question(payload, generated, planner="test", model="test")
 
 
 def test_not_decided_is_reopened_as_an_incomplete_answer() -> None:
@@ -356,7 +495,7 @@ def test_not_decided_is_reopened_as_an_incomplete_answer() -> None:
 
     assert question is not None
     assert question.category == "PROBLEM"
-    assert "earlier answer did not identify one concrete outcome" in question.question_text.casefold()
+    assert "single delay, error, or harmful result" in question.question_text.casefold()
 
 
 def test_an_excluded_feature_cannot_hijack_the_established_project_domain() -> None:
@@ -381,7 +520,7 @@ def test_an_excluded_feature_cannot_hijack_the_established_project_domain() -> N
     result = plan_for_selected_key(payload, "quality", planner="test", model="test")
 
     assert result.next_question is not None
-    assert "double-booking" in result.next_question.question_text
+    assert "booking-quality failure" in result.next_question.question_text
     assert "duplicate charge" not in result.next_question.question_text
     assert {option.key for option in result.next_question.options}.issuperset({
         "no-double-booking", "protect-location", "not-decided"
@@ -391,11 +530,11 @@ def test_an_excluded_feature_cannot_hijack_the_established_project_domain() -> N
 @pytest.mark.parametrize(
     ("category", "key", "question_text"),
     [
-        ("QUALITY_GOALS", "quality", "Given confirmed booking conflicts, which launch failure would be least acceptable?"),
-        ("METRICS", "metrics", "Given the current booking conflicts, which success metric should the team track?"),
+        ("QUALITY_GOALS", "quality", "Which residential-cleaning booking failure would be least acceptable at launch?"),
+        ("METRICS", "metrics", "Which residential-cleaning booking event should the metric numerator count?"),
     ],
 )
-def test_generated_question_must_cover_category_specific_decision_facets(
+def test_generated_question_accepts_one_category_specific_decision_facet(
     category: str, key: str, question_text: str
 ) -> None:
     scenario = SCENARIOS["simple"]
@@ -416,9 +555,33 @@ def test_generated_question_must_cover_category_specific_decision_facets(
         "missing_requirement": "A complete category decision.",
         "source_context": ["project:description", "answer:problem"],
         "options": [
-            {"key": "one", "label": "First decision pattern", "description": "Prioritizes one concrete outcome with an explicit implementation consequence."},
-            {"key": "two", "label": "Second decision pattern", "description": "Prioritizes a distinct outcome with a different delivery consequence."},
-            {"key": "three", "label": "Third decision pattern", "description": "Prioritizes another valid outcome with a visible operational consequence."},
+            {"key": "one", "label": "First booking decision", "description": "Prioritizes one residential-cleaning booking outcome with an explicit operational consequence."},
+            {"key": "two", "label": "Second booking decision", "description": "Prioritizes a distinct residential-cleaning booking outcome with a different delivery consequence."},
+            {"key": "three", "label": "Third booking decision", "description": "Prioritizes another residential-cleaning booking outcome with a visible operational consequence."},
+            {"key": "not-decided", "label": "Not decided yet", "description": "Keeps the requirement as an explicit unresolved product decision."},
+        ],
+    }
+
+    result = plan_for_generated_question(payload, generated, planner="test", model="test")
+
+    assert result.next_question is not None
+    assert result.next_question.question_text == question_text
+
+
+@pytest.mark.parametrize(("category", "key"), [("QUALITY_GOALS", "quality"), ("METRICS", "metrics")])
+def test_generated_question_rejects_missing_category_decision_facet(category: str, key: str) -> None:
+    scenario = SCENARIOS["simple"]
+    candidate = next(item for item in _candidates({category}) if item.category == category)
+    payload = DiscoveryPlanningRequest(project=_project(scenario), candidate_questions=[candidate])
+    generated = {
+        "key": key,
+        "category": category,
+        "question_text": "Which residential-cleaning booking detail should the team discuss next?",
+        "why_we_ask": "The answer should produce a complete and verifiable requirement for downstream documentation.",
+        "options": [
+            {"key": "one", "label": "First booking decision", "description": "Prioritizes one residential-cleaning booking outcome with an explicit operational consequence."},
+            {"key": "two", "label": "Second booking decision", "description": "Prioritizes a distinct residential-cleaning booking outcome with a different delivery consequence."},
+            {"key": "three", "label": "Third booking decision", "description": "Prioritizes another residential-cleaning booking outcome with a visible operational consequence."},
             {"key": "not-decided", "label": "Not decided yet", "description": "Keeps the requirement as an explicit unresolved product decision."},
         ],
     }
@@ -459,6 +622,6 @@ def test_incomplete_and_contradictory_answers_trigger_a_precise_revision_questio
 
     assert result.next_question is not None
     assert result.next_question.key == "constraints"
-    assert "point in different directions" in result.next_question.question_text
+    assert "deployment constraints permit the required integration" in result.next_question.question_text.casefold()
     assert result.next_question.question_text not in {answer.question_text for answer in answers}
     assert result.assumptions == []

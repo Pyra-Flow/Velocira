@@ -29,7 +29,7 @@ export default function LoginPage() {
     }
     setIsSubmitting(true);
     try {
-      if (await login(email, password)) router.push("/home");
+      if (await login(email, password)) router.push("/projects");
     } finally {
       setIsSubmitting(false);
     }

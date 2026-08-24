@@ -1,9 +1,9 @@
-import { Check, CircleDot } from "lucide-react";
+import { Check } from "lucide-react";
 import type { CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import type { ProjectStatus } from "@/lib/api";
 
-const stages = ["Draft", "Discovery", "Ready", "Generation", "Review", "Approved"];
+const stages = ["Brief", "Questions", "Ready", "Generate", "Review", "Approved"];
 
 const stageForStatus: Record<ProjectStatus, number> = {
   DRAFT: 0,
@@ -43,7 +43,7 @@ export default function ProjectLifecycle({ status, className }: Props) {
           return (
             <li key={stage} className={cn(complete && "is-complete", active && "is-active")} aria-current={active ? "step" : undefined}>
               <span className="sf-lifecycle__node" aria-hidden="true">
-                {complete ? <Check /> : <CircleDot />}
+                {complete ? <Check /> : index + 1}
               </span>
               <span>{stage}</span>
             </li>

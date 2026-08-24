@@ -23,9 +23,11 @@ public class GenerationProperties {
     public static class Ai {
         private String baseUrl = "http://localhost:8000";
         private String sharedSecret = "";
-        /** Enables the isolated AI planner; the deterministic catalog remains the safe fallback. */
+        /** Enables the isolated AI planner. Deterministic authoring is used only when explicitly disabled. */
         private boolean discoveryPlannerEnabled = false;
         private Duration connectTimeout = Duration.ofSeconds(3);
+        /** Allows Gemini Flash to finish without turning an ordinary slow response into fallback content. */
+        private Duration discoveryPlannerTimeout = Duration.ofSeconds(120);
         private Duration readTimeout = Duration.ofMinutes(30);
     }
 

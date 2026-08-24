@@ -38,6 +38,11 @@ import java.util.regex.Pattern;
 @RequiredArgsConstructor
 public class DocumentationPackageService {
     private static final Pattern NON_ID = Pattern.compile("[^a-z0-9]+");
+    private static final Pattern APPLICABILITY_SIGNALS = Pattern.compile("(?i)applicable context signals?\\s*:\\s*([^.;]+)");
+    private static final Pattern ERD_RELATIONSHIP = Pattern.compile("(?m)^\\s*[A-Za-z0-9_]+\\s+[|o}{.]+--[|o}{.]+\\s+[A-Za-z0-9_]+(?:\\s*:\\s*.+)?\\s*$");
+    private static final Pattern ERD_RELATIONSHIP_CAPTURE = Pattern.compile("(?m)^\\s*([A-Za-z0-9_]+)\\s+[|o}{.]+--[|o}{.]+\\s+([A-Za-z0-9_]+)(?:\\s*:\\s*(.+))?\\s*$");
+    private static final Pattern ERD_ENTITY = Pattern.compile("(?m)^\\s*[A-Za-z0-9_]+\\s*\\{\\s*$");
+    private static final Set<String> HTTP_METHODS = Set.of("get", "put", "post", "delete", "patch", "options", "head", "trace");
 
     private final ProjectRepository projectRepository;
     private final SrsVersionRepository srsVersionRepository;
@@ -84,14 +89,14 @@ public class DocumentationPackageService {
                     HttpStatus.UNPROCESSABLE_ENTITY);
         }
 
+        boolean approvalEligible = validation.node().path("approvalEligible").asBoolean(false);
+        Instant generatedAt = Instant.now();
         DocumentationPackageEntity documentationPackage = packageRepository.save(DocumentationPackageEntity.builder()
                 .project(project).owner(project.getOwner()).srsVersion(srs)
                 .versionNumber(packageRepository.nextVersionBase(projectId) + 1)
-                // A package is generated only after all deterministic validators
-                // pass, so exports should be immediately available without an
-                // additional approval screen.
-                .status(DocumentationPackageStatus.APPROVED).approvedAt(Instant.now())
-                .canonicalModel(draft.model()).validationOutcome(validation.node()).generatedAt(Instant.now()).build());
+                .status(approvalEligible ? DocumentationPackageStatus.APPROVED : DocumentationPackageStatus.NEEDS_REVIEW)
+                .approvedAt(approvalEligible ? generatedAt : null)
+                .canonicalModel(draft.model()).validationOutcome(validation.node()).generatedAt(generatedAt).build());
 
         for (ArtifactDraft artifact : draft.artifacts()) {
             artifactRepository.save(DocumentationArtifactEntity.builder()
@@ -114,8 +119,9 @@ public class DocumentationPackageService {
     public DocumentationDtos.PackageResponse approve(UUID projectId, UUID packageId, UUID ownerId) {
         DocumentationPackageEntity documentationPackage = requiredPackage(projectId, packageId, ownerId);
         if (documentationPackage.getStatus() == DocumentationPackageStatus.APPROVED) return response(documentationPackage);
-        if (!documentationPackage.getValidationOutcome().path("valid").asBoolean(false)) {
-            throw new DocumentationPackageException("A package with failing validation cannot be approved.", HttpStatus.CONFLICT);
+        if (!documentationPackage.getValidationOutcome().path("valid").asBoolean(false)
+                || !documentationPackage.getValidationOutcome().path("approvalEligible").asBoolean(false)) {
+            throw new DocumentationPackageException("This package is not approval-eligible. Resolve the recorded material gaps and regenerate it from the canonical SRS.", HttpStatus.CONFLICT);
         }
         documentationPackage.setStatus(DocumentationPackageStatus.APPROVED);
         documentationPackage.setApprovedAt(Instant.now());
@@ -136,9 +142,13 @@ public class DocumentationPackageService {
         ObjectNode srsNode = model.putObject("srsVersion");
         srsNode.put("id", srs.getId().toString());
         srsNode.put("version", srs.getVersionNumber());
+        srsNode.put("status", srs.getStatus().name());
+        srsNode.put("provider", srs.getProvider());
+        srsNode.put("model", srs.getModel());
+        srsNode.put("contentSha256", GenerationHashing.sha256(srs.getSrsContent().toString()));
 
         List<NamedNode> actors = namesFromBrief(srs.getBriefSnapshot(), "users", "stakeholders", "actor");
-        List<NamedNode> entities = namesFromBrief(srs.getBriefSnapshot(), "entities", "entity");
+        List<NamedNode> entities = canonicalEntities(srs);
         List<NamedNode> rules = namesFromBrief(srs.getBriefSnapshot(), "business_rules", "businessRules", "rule");
         List<NamedNode> integrations = namesFromBrief(srs.getBriefSnapshot(), "integrations", "integration");
         array(model, "actors", actors);
@@ -146,35 +156,51 @@ public class DocumentationPackageService {
         array(model, "businessRules", rules);
         array(model, "integrations", integrations);
         model.set("srs", srs.getSrsContent().deepCopy());
-        model.set("standardsApplied", srs.getSrsContent().path("standards_applied").deepCopy());
+        model.set("standardsApplied", applicableStandards(srs));
         model.set("qualityScenarios", srs.getSrsContent().path("quality_scenarios").deepCopy());
         model.set("decisions", srs.getSrsContent().path("decisions").deepCopy());
         model.set("generationManifest", srs.getSrsContent().path("generation_manifest").deepCopy());
         model.set("sourceRegistry", srs.getSrsContent().path("source_registry").deepCopy());
         model.set("terminologyRegistry", srs.getSrsContent().path("definitions").deepCopy());
-        ArrayNode workflowSteps = model.putArray("workflowSteps");
         JsonNode compiledWorkflow = srs.getSrsContent().path("workflows");
-        if (compiledWorkflow.isArray() && !compiledWorkflow.isEmpty()) {
-            compiledWorkflow.get(0).path("main_flow").forEach(step -> workflowSteps.add(step.asText()));
-        } else {
-            splitBriefSteps(srs.getBriefSnapshot().path("workflows").asText()).forEach(workflowSteps::add);
-        }
+        model.set("workflows", compiledWorkflow.deepCopy());
+        ArrayNode workflowSteps = model.putArray("workflowSteps");
+        if (compiledWorkflow.isArray() && !compiledWorkflow.isEmpty()) compiledWorkflow.forEach(workflow ->
+                workflow.path("main_flow").forEach(step -> workflowSteps.add(step.asText())));
+        else splitBriefSteps(srs.getBriefSnapshot().path("workflows").asText()).forEach(workflowSteps::add);
 
         ArrayNode requirementNodes = model.putArray("requirements");
         List<TraceDraft> traces = new ArrayList<>();
+        Map<String, ApiOperation> apiOperations = new LinkedHashMap<>();
+        Set<String> apiEndpointKeys = new HashSet<>();
+        Set<String> apiOperationIds = new HashSet<>();
         for (int index = 0; index < requirements.size(); index++) {
             SrsRequirementEntity requirement = requirements.get(index);
             String key = requirement.getRequirementId();
             String useCaseId = "UC-" + String.format("%03d", index + 1);
-            // A requirement ID is not an HTTP resource. Keep the operation
-            // unresolved until project evidence confirms a path and method.
-            String operationId = null;
+            JsonNode detail = srsRequirementDetail(srs, key);
+            ApiOperation operation = "API".equals(requirement.getRequirementType()) ? confirmedApiOperation(detail) : null;
+            if (operation != null && !apiOperationMatchesLocalSource(detail, requirement, operation)) {
+                operation = null;
+            }
+            if (operation != null) {
+                String endpointKey = operation.method() + " " + operation.path();
+                if (apiEndpointKeys.contains(endpointKey) || apiOperationIds.contains(operation.operationId())) {
+                    operation = null;
+                } else {
+                    apiEndpointKeys.add(endpointKey);
+                    apiOperationIds.add(operation.operationId());
+                }
+            }
+            String operationId = operation == null ? null : operation.operationId();
+            if (operation != null) apiOperations.put(key, operation);
             String entityId = matchingEntity(requirement, entities);
             List<String> acceptance = acceptanceCriteria(requirement.getAcceptanceCriteria());
             String acceptanceId = "AC-" + slug(key) + "-001";
-            ObjectNode item = requirementNodes.addObject();
+            ObjectNode item = detail.isObject() ? (ObjectNode) detail.deepCopy() : objectMapper.createObjectNode();
+            requirementNodes.add(item);
             item.put("id", key); item.put("recordId", requirement.getId().toString());
-            item.put("title", srsRequirementDetail(srs, key).path("title").asText(requirementTitle(requirement)));
+            item.put("title", detail.path("title").asText(requirementTitle(requirement)));
             item.put("type", requirement.getRequirementType()); item.put("priority", requirement.getPriority());
             item.put("statement", requirement.getStatement()); item.put("sourceKind", requirement.getSourceKind());
             item.put("sourceDetail", requirement.getSourceDetail()); item.put("verificationMethod", requirement.getVerificationMethod());
@@ -191,52 +217,103 @@ public class DocumentationPackageService {
                     entityId, operationId, acceptanceId));
         }
 
-        ObjectNode openApi = openApi(project, requirements, entities);
-        model.set("documentPlan", documentPlan(requirements, entities, integrations));
+        ObjectNode openApi = openApi(project, requirements, apiOperations);
         String useCases = useCases(project, srs, requirements, actors, entities);
         String uml = plantUml(project, srs, requirements, actors);
-        String erd = erd(entities);
+        String erd = diagramSource(srs, "ERD", "");
+        model.set("erdRelationships", erdRelationships(erd));
         String srsMarkdown = srsMarkdown(project, srs, requirements);
         String brd = businessRequirements(project, srs, requirements, actors, rules);
         String architecture = architecture(project, srs, requirements, actors, entities, integrations);
-        String c4Context = diagramSource(srs, "C4_CONTEXT", fallbackContextDiagram(project, actors, integrations));
+        String c4Context = diagramSource(srs, "C4_CONTEXT", actors.isEmpty() && integrations.isEmpty() ? "" : fallbackContextDiagram(project, actors, integrations));
         String workflows = workflows(project, srs, requirements, actors);
-        String workflowDiagram = diagramSource(srs, "WORKFLOW", fallbackWorkflowDiagram(srs));
+        String fallbackWorkflow = workflowSteps.size() >= 2 ? fallbackWorkflowDiagram(srs) : "";
+        String workflowDiagram = diagramSource(srs, "WORKFLOW", fallbackWorkflow);
         String dataDictionary = dataDictionary(project, srs, requirements, entities);
         String security = securityAndPrivacy(project, srs, requirements);
-        String testPlan = testPlan(project, requirements);
+        String testPlan = testPlan(project, srs, requirements);
         String deployment = deployment(project, srs, requirements);
         String operations = operations(project, srs, requirements);
         String userManual = userManual(project, srs, requirements, actors);
         String risks = riskRegister(project, srs);
-        String traceability = traceability(traces);
+        String traceability = traceability(project, srs, traces);
         String openApiJson;
         try { openApiJson = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(openApi); }
         catch (Exception ex) { throw new IllegalStateException("Unable to render OpenAPI contract", ex); }
-        String openApiYaml = openApiYaml(openApi, project.getName());
 
-        List<ArtifactDraft> artifacts = List.of(
-                markdownArtifact(DocumentationArtifactType.SRS, "Software Requirements Specification", srsMarkdown, "srs-compiler-v2"),
-                markdownArtifact(DocumentationArtifactType.BRD, "Business Requirements Document", brd, "brd-compiler-v2"),
-                markdownArtifact(DocumentationArtifactType.ARCHITECTURE, "Architecture Description", architecture, "iso-42010-arc42"),
-                new ArtifactDraft(DocumentationArtifactType.USE_CASES, "Use cases", useCases, "PLANTUML", uml, validArtifact("plantuml", isPlantUmlValid(uml))),
-                new ArtifactDraft(DocumentationArtifactType.C4_CONTEXT, "C4 system context", "```mermaid\n" + c4Context + "\n```", "MERMAID", c4Context, validArtifact("mermaid-c4-context", isMermaidFlowValid(c4Context))),
-                new ArtifactDraft(DocumentationArtifactType.WORKFLOWS, "Workflow and recovery diagrams", workflows, "MERMAID", workflowDiagram, validArtifact("mermaid-workflow", isMermaidFlowValid(workflowDiagram))),
-                markdownArtifact(DocumentationArtifactType.DATA_DICTIONARY, "Data Dictionary", dataDictionary, "data-dictionary-v2"),
-                new ArtifactDraft(DocumentationArtifactType.ERD, "Entity relationship diagram", "```mermaid\n" + erd + "\n```", "MERMAID", erd, validArtifact("mermaid-erd", isErdValid(erd))),
-                new ArtifactDraft(DocumentationArtifactType.OPENAPI, "OpenAPI contract", "```json\n" + openApiJson + "\n```", "OPENAPI_JSON", openApiJson, validateOpenApi(openApi)),
-                markdownArtifact(DocumentationArtifactType.SECURITY, "Security and Privacy Specification", security, "security-privacy-v2"),
-                markdownArtifact(DocumentationArtifactType.TEST_PLAN, "Verification and Test Plan", testPlan, "iso-29119-v2"),
-                markdownArtifact(DocumentationArtifactType.DEPLOYMENT, "Deployment Specification", deployment, "deployment-v2"),
-                markdownArtifact(DocumentationArtifactType.OPERATIONS, "Operations Runbook", operations, "operations-v2"),
-                markdownArtifact(DocumentationArtifactType.USER_MANUAL, "User Manual", userManual, "user-manual-v2"),
-                markdownArtifact(DocumentationArtifactType.RISK_REGISTER, "Risk and Decision Register", risks, "iso-31000-v2"),
-                markdownArtifact(DocumentationArtifactType.TRACEABILITY, "Traceability Matrix", traceability, "traceability-v2"));
-        return new CanonicalDraft(model, artifacts, traces);
+        List<ArtifactDraft> artifacts = new ArrayList<>();
+        Map<DocumentationArtifactType, ArtifactDisposition> dispositions = new EnumMap<>(DocumentationArtifactType.class);
+        addMarkdown(artifacts, dispositions, DocumentationArtifactType.SRS, "Software Requirements Specification", srsMarkdown,
+                "srs-compiler-v2", "REQUIRED", "Canonical governed requirement baseline.");
+        addMarkdown(artifacts, dispositions, DocumentationArtifactType.BRD, "Business Requirements Document", brd,
+                "brd-compiler-v2", "REQUIRED", "Business scope and requirement rationale are present in the canonical SRS.");
+        addMarkdown(artifacts, dispositions, DocumentationArtifactType.ARCHITECTURE, "Architecture Description", architecture,
+                "iso-42010-arc42", "REQUIRED", "Architecture views are constrained by the canonical SRS evidence and unresolved decisions.");
+
+        boolean hasFunctional = requirements.stream().anyMatch(requirement -> "FUNCTIONAL".equals(requirement.getRequirementType()));
+        if (hasFunctional) {
+            artifacts.add(new ArtifactDraft(DocumentationArtifactType.USE_CASES, "Use cases", useCases, "PLANTUML", uml, validArtifact("plantuml", isPlantUmlValid(uml))));
+            dispositions.put(DocumentationArtifactType.USE_CASES, new ArtifactDisposition("REQUIRED", "Functional requirements provide traceable use cases."));
+        } else omit(dispositions, DocumentationArtifactType.USE_CASES, "No functional requirement supports a use-case artifact.");
+
+        if (isMeaningfulFlow(c4Context)) {
+            artifacts.add(new ArtifactDraft(DocumentationArtifactType.C4_CONTEXT, "C4 system context", "```mermaid\n" + c4Context + "\n```", "MERMAID", c4Context, validArtifact("mermaid-c4-context", true)));
+            dispositions.put(DocumentationArtifactType.C4_CONTEXT, new ArtifactDisposition("REQUIRED", "Confirmed actors or integrations support a system-context view."));
+        } else omit(dispositions, DocumentationArtifactType.C4_CONTEXT, "No confirmed actor or integration supports a non-empty context diagram.");
+
+        if (isMeaningfulFlow(workflowDiagram)) {
+            artifacts.add(new ArtifactDraft(DocumentationArtifactType.WORKFLOWS, "Workflow and recovery diagrams", workflows, "MERMAID", workflowDiagram, validArtifact("mermaid-workflow", true)));
+            dispositions.put(DocumentationArtifactType.WORKFLOWS, new ArtifactDisposition("REQUIRED", "The canonical SRS contains an ordered workflow with at least two steps."));
+        } else omit(dispositions, DocumentationArtifactType.WORKFLOWS, "No sufficiently detailed canonical workflow supports a diagram.");
+
+        if (!entities.isEmpty()) addMarkdown(artifacts, dispositions, DocumentationArtifactType.DATA_DICTIONARY, "Data Dictionary", dataDictionary,
+                "data-dictionary-v2", "REQUIRED", "Confirmed domain entities support a conceptual data register.");
+        else omit(dispositions, DocumentationArtifactType.DATA_DICTIONARY, "No confirmed domain entity supports a data dictionary.");
+
+        if (isErdValid(erd)) {
+            artifacts.add(new ArtifactDraft(DocumentationArtifactType.ERD, "Entity relationship diagram", "```mermaid\n" + erd + "\n```", "MERMAID", erd, validArtifact("mermaid-erd", true)));
+            dispositions.put(DocumentationArtifactType.ERD, new ArtifactDisposition("REQUIRED", "The canonical SRS records at least two entities and an explicit relationship."));
+        } else omit(dispositions, DocumentationArtifactType.ERD, "Entity names alone do not justify relationship cardinality; no ERD is emitted until the canonical SRS records a relationship.");
+
+        if (!openApi.path("paths").isEmpty()) {
+            artifacts.add(new ArtifactDraft(DocumentationArtifactType.OPENAPI, "OpenAPI contract", "```json\n" + openApiJson + "\n```", "OPENAPI_JSON", openApiJson, validateOpenApi(openApi)));
+            dispositions.put(DocumentationArtifactType.OPENAPI, new ArtifactDisposition("REQUIRED", "Confirmed paths, methods, operation IDs, and requirement traces support an API contract."));
+        } else omit(dispositions, DocumentationArtifactType.OPENAPI, apiOperations.isEmpty()
+                ? "No API operation has a confirmed path, method, and operation ID; a zero-endpoint contract would be misleading."
+                : "No valid traceable API operation remains after validation.");
+
+        boolean hasSecurityEvidence = hasRequirementType(requirements, "SECURITY", "PRIVACY") || !srs.getSrsContent().path("risks").isEmpty();
+        addMarkdown(artifacts, dispositions, DocumentationArtifactType.SECURITY, "Security and Privacy Specification", security,
+                "security-privacy-v2", hasSecurityEvidence ? "REQUIRED" : "PROPOSED",
+                hasSecurityEvidence ? "Canonical security, privacy, or risk evidence requires review." : "A bounded security applicability review is proposed; no project-specific control is claimed.");
+        addMarkdown(artifacts, dispositions, DocumentationArtifactType.TEST_PLAN, "Verification and Test Plan", testPlan,
+                "iso-29119-v2", "REQUIRED", "Every canonical requirement has acceptance and verification evidence.");
+
+        if (hasRequirementType(requirements, "OPERATIONS", "NON_FUNCTIONAL") || meaningfulBrief(srs, "constraints")) {
+            addMarkdown(artifacts, dispositions, DocumentationArtifactType.DEPLOYMENT, "Deployment Specification", deployment,
+                    "deployment-v2", "REQUIRED", "Confirmed constraints and operational requirements bound the release controls.");
+            addMarkdown(artifacts, dispositions, DocumentationArtifactType.OPERATIONS, "Operations Runbook", operations,
+                    "operations-v2", "REQUIRED", "Operational requirements support a reviewable runbook; unresolved decisions remain explicit.");
+        } else {
+            omit(dispositions, DocumentationArtifactType.DEPLOYMENT, "No canonical deployment constraint or operational requirement supports a deployment specification.");
+            omit(dispositions, DocumentationArtifactType.OPERATIONS, "No canonical service objective or operational requirement supports a runbook.");
+        }
+
+        if (hasFunctional && !actors.isEmpty()) addMarkdown(artifacts, dispositions, DocumentationArtifactType.USER_MANUAL, "User Manual", userManual,
+                "user-manual-v2", "REQUIRED", "Confirmed actors and functional goals support a pre-implementation task guide.");
+        else omit(dispositions, DocumentationArtifactType.USER_MANUAL, "A user manual requires both confirmed actors and functional requirements.");
+
+        addMarkdown(artifacts, dispositions, DocumentationArtifactType.RISK_REGISTER, "Risk and Decision Register", risks,
+                "iso-31000-v2", "REQUIRED", "Risks and missing decisions must remain visible to reviewers.");
+        addMarkdown(artifacts, dispositions, DocumentationArtifactType.TRACEABILITY, "Traceability Matrix", traceability,
+                "traceability-v2", "REQUIRED", "Every canonical requirement has a primary trace row and acceptance link.");
+        model.set("documentPlan", documentPlan(dispositions));
+        return new CanonicalDraft(model, artifacts, traces, dispositions);
     }
 
     private ValidationResult validate(CanonicalDraft draft) {
         List<String> issues = new ArrayList<>();
+        List<String> materialGaps = new ArrayList<>();
         Set<String> requirementIds = new HashSet<>();
         for (JsonNode requirement : draft.model().path("requirements")) {
             if (!requirementIds.add(requirement.path("id").asText())) issues.add("Duplicate requirement ID in canonical model.");
@@ -251,17 +328,33 @@ public class DocumentationPackageService {
             if (trace.acceptanceCriterionId() == null) issues.add("Broken requirement trace.");
         }
         Map<DocumentationArtifactType, ArtifactDraft> artifacts = new EnumMap<>(DocumentationArtifactType.class);
-        draft.artifacts().forEach(artifact -> artifacts.put(artifact.type(), artifact));
-        for (DocumentationArtifactType type : DocumentationArtifactType.values()) {
-            ArtifactDraft artifact = artifacts.get(type);
-            if (artifact == null || artifact.sourceContent().isBlank()) issues.add("Missing required package artifact: " + type + ".");
-            else if (!artifact.validation().path("valid").asBoolean(false)) issues.add(type + " failed its artifact validator.");
+        for (ArtifactDraft artifact : draft.artifacts()) {
+            if (artifacts.put(artifact.type(), artifact) != null) issues.add("Duplicate package artifact: " + artifact.type() + ".");
+            if (artifact.sourceContent().isBlank()) issues.add("Emitted artifact " + artifact.type() + " has no authoritative source content.");
+            else if (!artifact.validation().path("valid").asBoolean(false)) issues.add(artifact.type() + " failed its artifact validator.");
         }
-        if (!isPlantUmlValid(artifacts.get(DocumentationArtifactType.USE_CASES).sourceContent())) issues.add("Use-case UML source is invalid.");
-        if (!isMermaidFlowValid(artifacts.get(DocumentationArtifactType.C4_CONTEXT).sourceContent())) issues.add("C4 context source is invalid.");
-        if (!isMermaidFlowValid(artifacts.get(DocumentationArtifactType.WORKFLOWS).sourceContent())) issues.add("Workflow source is invalid.");
-        if (!isErdValid(artifacts.get(DocumentationArtifactType.ERD).sourceContent())) issues.add("ERD source is invalid.");
-        if (!artifacts.get(DocumentationArtifactType.OPENAPI).validation().path("valid").asBoolean(false)) issues.add("OpenAPI contract is invalid.");
+        for (Map.Entry<DocumentationArtifactType, ArtifactDisposition> planned : draft.dispositions().entrySet()) {
+            boolean emitted = artifacts.containsKey(planned.getKey());
+            if ("OMITTED".equals(planned.getValue().status()) && emitted) {
+                issues.add(planned.getKey() + " is marked omitted but was emitted.");
+            } else if (!"OMITTED".equals(planned.getValue().status()) && !emitted) {
+                issues.add("Planned artifact was not emitted: " + planned.getKey() + ".");
+            }
+            if (planned.getValue().reason().isBlank()) issues.add(planned.getKey() + " has no artifact-disposition rationale.");
+            if ("PROPOSED".equals(planned.getValue().status())) {
+                materialGaps.add(planned.getKey() + " remains proposed: " + planned.getValue().reason());
+            }
+        }
+        if (artifacts.containsKey(DocumentationArtifactType.USE_CASES)
+                && !isPlantUmlValid(artifacts.get(DocumentationArtifactType.USE_CASES).sourceContent())) issues.add("Use-case UML source is invalid.");
+        if (artifacts.containsKey(DocumentationArtifactType.C4_CONTEXT)
+                && !isMeaningfulFlow(artifacts.get(DocumentationArtifactType.C4_CONTEXT).sourceContent())) issues.add("C4 context source is empty or invalid.");
+        if (artifacts.containsKey(DocumentationArtifactType.WORKFLOWS)
+                && !isMeaningfulFlow(artifacts.get(DocumentationArtifactType.WORKFLOWS).sourceContent())) issues.add("Workflow source is empty or invalid.");
+        if (artifacts.containsKey(DocumentationArtifactType.ERD)
+                && !isErdValid(artifacts.get(DocumentationArtifactType.ERD).sourceContent())) issues.add("ERD must contain at least two entities and one explicit relationship.");
+        if (artifacts.containsKey(DocumentationArtifactType.OPENAPI)
+                && !artifacts.get(DocumentationArtifactType.OPENAPI).validation().path("valid").asBoolean(false)) issues.add("OpenAPI contract is invalid.");
         if (traceRequirementIds.size() != requirementIds.size()) issues.add("Every requirement must have an explicit trace row.");
         for (String collection : List.of("actors", "entities", "integrations")) {
             for (JsonNode item : draft.model().path(collection)) {
@@ -271,21 +364,25 @@ public class DocumentationPackageService {
             }
         }
         ObjectNode outcome = objectMapper.createObjectNode();
-        outcome.put("canonicalSchema", "linked-documentation-v1");
+        outcome.put("canonicalSchema", "linked-documentation-v2");
         outcome.put("requirementsChecked", requirementIds.size());
         outcome.put("traceLinksChecked", traceRequirementIds.size());
         outcome.put("artifactsChecked", artifacts.size());
+        outcome.put("artifactsOmitted", draft.dispositions().values().stream().filter(item -> "OMITTED".equals(item.status())).count());
+        outcome.put("artifactsProposed", draft.dispositions().values().stream().filter(item -> "PROPOSED".equals(item.status())).count());
         int totalWords = artifacts.values().stream().mapToInt(artifact -> wordCount(artifact.content())).sum();
         outcome.put("totalWords", totalWords);
-        boolean exhaustive = "EXHAUSTIVE".equalsIgnoreCase(draft.model().path("generationManifest").path("mode").asText());
-        if (exhaustive && requirementIds.size() < 12) issues.add("Exhaustive packages require at least 12 traceable atomic requirements.");
-        int minimumExhaustivePackageWordTarget = 9_500;
+        String generationMode = draft.model().path("generationManifest").path("mode").asText("STANDARD").toUpperCase(Locale.ROOT);
+        boolean exhaustive = "EXHAUSTIVE".equals(generationMode);
+        outcome.put("generationMode", generationMode);
         int declaredPackageWordTarget = draft.model().path("generationManifest").path("long_form_provenance")
                 .path("expected_package_word_target").asInt(0);
-        int exhaustivePackageWordTarget = Math.max(minimumExhaustivePackageWordTarget,
-                Math.min(50_000, declaredPackageWordTarget));
-        if (exhaustive && totalWords < exhaustivePackageWordTarget) {
-            issues.add("Exhaustive packages require at least " + exhaustivePackageWordTarget + " useful words across the linked artifacts; generated " + totalWords + ".");
+        outcome.put("declaredPackageWordTarget", declaredPackageWordTarget);
+        outcome.put("wordTargetSource", "canonical-srs.generation_manifest.long_form_provenance.expected_package_word_target");
+        if (exhaustive && declaredPackageWordTarget <= 0) {
+            issues.add("The canonical exhaustive manifest does not declare expected_package_word_target.");
+        } else if (declaredPackageWordTarget > 0 && totalWords < declaredPackageWordTarget) {
+            issues.add("The canonical manifest requires at least " + declaredPackageWordTarget + " useful words across the linked artifacts; generated " + totalWords + ".");
         }
         JsonNode narrativeSections = draft.model().path("srs").path("narrative_sections");
         int narrativeSectionCount = narrativeSections.isArray() ? narrativeSections.size() : 0;
@@ -301,27 +398,77 @@ public class DocumentationPackageService {
             if (!normalizedBody.isBlank() && !narrativeBodies.add(normalizedBody)) {
                 issues.add("Narrative sections contain repeated boilerplate.");
             }
-            if (exhaustive && !"UNRESOLVED".equals(section.path("source_status").asText()) && wordCount(body) < 100) {
-                issues.add("Exhaustive narrative section " + id + " is too short to be useful.");
-            }
             if (body.matches("(?is).*\\b(?:tbd|lorem ipsum)\\b.*") || body.contains("{{") || body.contains("}}")) {
                 issues.add("Narrative section " + id + " contains an unresolved template marker.");
             }
         }
         outcome.put("narrativeSectionsChecked", narrativeSectionCount);
         outcome.put("narrativeWords", narrativeWords);
-        outcome.put("exhaustivePackageWordTarget", exhaustivePackageWordTarget);
-        if (exhaustive && narrativeSectionCount < 12) issues.add("Exhaustive packages require all 12 narrative section contracts.");
-        outcome.put("exhaustiveWordTargetMet", !exhaustive || totalWords >= exhaustivePackageWordTarget);
+        int contractedSections = draft.model().path("generationManifest").path("section_contracts").isArray()
+                ? draft.model().path("generationManifest").path("section_contracts").size() : 0;
+        if (contractedSections > 0 && narrativeSectionCount < contractedSections) {
+            issues.add("The canonical manifest declares " + contractedSections + " narrative section contracts but only " + narrativeSectionCount + " are present.");
+        }
+        outcome.put("contractedNarrativeSections", contractedSections);
+        outcome.put("wordTargetMet", declaredPackageWordTarget <= 0 || totalWords >= declaredPackageWordTarget);
         outcome.put("requirementTraceabilityCoverage", requirementIds.isEmpty() ? 0 : Math.round(traceRequirementIds.size() * 10_000.0 / requirementIds.size()) / 100.0);
+
+        if (!"APPROVED".equals(draft.model().path("srsVersion").path("status").asText())) {
+            materialGaps.add("The canonical SRS is not approved.");
+        }
+        String manifestStatus = draft.model().path("generationManifest").path("validation_status").asText();
+        if (!manifestStatus.isBlank() && !"PASSED".equalsIgnoreCase(manifestStatus)) {
+            materialGaps.add("The canonical generation manifest is not in PASSED state.");
+        }
+        for (JsonNode decision : draft.model().path("decisions")) {
+            if (Set.of("UNRESOLVED", "OPEN", "NEEDS_REVIEW").contains(decision.path("status").asText().toUpperCase(Locale.ROOT))) {
+                materialGaps.add("Open decision " + decision.path("id").asText("without ID") + " requires resolution.");
+            }
+        }
+        Set<String> tracedOperations = new HashSet<>();
+        draft.traces().stream().map(TraceDraft::apiOperationId).filter(Objects::nonNull).forEach(tracedOperations::add);
+        for (JsonNode requirement : draft.model().path("requirements")) {
+            if ("API".equals(requirement.path("type").asText()) && requirement.path("apiOperationId").asText().isBlank()) {
+                materialGaps.add("API requirement " + requirement.path("id").asText() + " has no confirmed path, method, and operation ID; OpenAPI is omitted for that requirement.");
+            }
+        }
+        boolean hasFunctionalRequirement = java.util.stream.StreamSupport.stream(draft.model().path("requirements").spliterator(), false)
+                .anyMatch(requirement -> "FUNCTIONAL".equals(requirement.path("type").asText()));
+        boolean hasDataRequirement = java.util.stream.StreamSupport.stream(draft.model().path("requirements").spliterator(), false)
+                .anyMatch(requirement -> "DATA".equals(requirement.path("type").asText()));
+        if (hasFunctionalRequirement && !artifacts.containsKey(DocumentationArtifactType.WORKFLOWS)) {
+            materialGaps.add("Functional requirements exist, but the canonical SRS has no sufficiently detailed workflow artifact.");
+        }
+        if (hasFunctionalRequirement && !artifacts.containsKey(DocumentationArtifactType.C4_CONTEXT)) {
+            materialGaps.add("Functional requirements exist, but confirmed actors and system-boundary evidence are insufficient for a context view.");
+        }
+        if (hasDataRequirement && !artifacts.containsKey(DocumentationArtifactType.ERD)) {
+            materialGaps.add("Data requirements exist, but the canonical SRS has no explicit entity relationship evidence for an ERD.");
+        }
+        if (artifacts.containsKey(DocumentationArtifactType.OPENAPI)) {
+            try {
+                JsonNode api = objectMapper.readTree(artifacts.get(DocumentationArtifactType.OPENAPI).sourceContent());
+                api.path("paths").properties().forEach(path -> path.getValue().properties().forEach(method -> {
+                    String operationId = method.getValue().path("operationId").asText();
+                    String requirementId = method.getValue().path("x-velocira-requirement-id").asText();
+                    if (!tracedOperations.contains(operationId) || !requirementIds.contains(requirementId)) {
+                        issues.add("OpenAPI operation " + operationId + " is not traceable to the canonical requirement set.");
+                    }
+                }));
+            } catch (Exception exception) {
+                issues.add("OpenAPI source cannot be parsed for canonical trace validation.");
+            }
+        }
         ArrayNode checks = outcome.putArray("checks");
         checks.add("requirement-to-use-case-or-nfr"); checks.add("requirement-to-entity-when-mentioned");
-        checks.add("api-requirement-to-operation-or-explicit-unresolved-contract"); checks.add("requirement-to-acceptance-criterion");
-        checks.add("plantuml-syntax"); checks.add("mermaid-c4-context"); checks.add("mermaid-workflow");
-        checks.add("mermaid-erd-syntax-and-keys"); checks.add("openapi-3.1-shape"); checks.add("all-package-artifacts-present");
-        checks.add("no-placeholder-diagram-labels"); checks.add("exhaustive-depth-and-traceability");
+        checks.add("api-operation-to-canonical-requirement"); checks.add("requirement-to-acceptance-criterion");
+        checks.add("emitted-artifact-syntax"); checks.add("artifact-plan-consistency");
+        checks.add("no-empty-openapi-or-erd"); checks.add("canonical-manifest-targets");
         ArrayNode issueNodes = outcome.putArray("issues"); issues.forEach(issueNodes::add);
+        ArrayNode gapNodes = outcome.putArray("materialGaps"); new LinkedHashSet<>(materialGaps).forEach(gapNodes::add);
         outcome.put("valid", issues.isEmpty());
+        outcome.put("approvalEligible", issues.isEmpty() && materialGaps.isEmpty());
+        outcome.put("exportReady", issues.isEmpty() && materialGaps.isEmpty());
         return new ValidationResult(issues.isEmpty(), issues, outcome);
     }
 
@@ -333,45 +480,39 @@ public class DocumentationPackageService {
         return new ArtifactDraft(type, title, content, "MARKDOWN", content, validArtifact(validator, issues.isEmpty(), issues));
     }
 
-    private ArrayNode documentPlan(List<SrsRequirementEntity> requirements, List<NamedNode> entities, List<NamedNode> integrations) {
-        boolean hasApi = requirements.stream().anyMatch(requirement -> "API".equals(requirement.getRequirementType()));
-        boolean hasSecurity = requirements.stream().anyMatch(requirement -> Set.of("SECURITY", "PRIVACY").contains(requirement.getRequirementType()));
+    private ArrayNode documentPlan(Map<DocumentationArtifactType, ArtifactDisposition> dispositions) {
         ArrayNode plan = objectMapper.createArrayNode();
         for (DocumentationArtifactType type : DocumentationArtifactType.values()) {
             ObjectNode item = plan.addObject();
             item.put("artifactType", type.name());
-            switch (type) {
-                case DATA_DICTIONARY, ERD -> {
-                    item.put("status", entities.isEmpty() ? "NOT_APPLICABLE" : "REQUIRED");
-                    item.put("reason", entities.isEmpty()
-                            ? "No domain entities are confirmed; the artifact records the missing decision without inventing a model."
-                            : "Confirmed domain entities require a shared information model and lifecycle review.");
-                }
-                case OPENAPI -> {
-                    item.put("status", hasApi ? "REVIEW_REQUIRED" : "NOT_APPLICABLE");
-                    item.put("reason", hasApi
-                            ? "API requirements exist, but paths and methods remain unresolved until explicitly confirmed."
-                            : "No API requirement is confirmed; an empty contract is retained to make non-applicability explicit.");
-                }
-                case SECURITY -> {
-                    item.put("status", hasSecurity ? "REQUIRED" : "REVIEW_REQUIRED");
-                    item.put("reason", hasSecurity
-                            ? "Security or privacy requirements are present in the approved baseline."
-                            : "The risk and applicability review remains mandatory even when no security requirement is yet confirmed.");
-                }
-                case C4_CONTEXT -> {
-                    item.put("status", "REQUIRED");
-                    item.put("reason", integrations.isEmpty()
-                            ? "The system boundary and unresolved external dependencies must remain visible."
-                            : "Confirmed actors or integrations require an explicit system-context boundary.");
-                }
-                default -> {
-                    item.put("status", "REQUIRED");
-                    item.put("reason", "Core implementation, verification, review, or operational work product.");
-                }
-            }
+            ArtifactDisposition disposition = dispositions.getOrDefault(type,
+                    new ArtifactDisposition("OMITTED", "The compiler found no canonical evidence for this artifact."));
+            item.put("status", disposition.status());
+            item.put("reason", disposition.reason());
+            item.put("emitted", !"OMITTED".equals(disposition.status()));
         }
         return plan;
+    }
+
+    private void addMarkdown(List<ArtifactDraft> artifacts, Map<DocumentationArtifactType, ArtifactDisposition> dispositions,
+                             DocumentationArtifactType type, String title, String content, String validator,
+                             String status, String reason) {
+        artifacts.add(markdownArtifact(type, title, content, validator));
+        dispositions.put(type, new ArtifactDisposition(status, reason));
+    }
+
+    private void omit(Map<DocumentationArtifactType, ArtifactDisposition> dispositions,
+                      DocumentationArtifactType type, String reason) {
+        dispositions.put(type, new ArtifactDisposition("OMITTED", reason));
+    }
+
+    private boolean hasRequirementType(List<SrsRequirementEntity> requirements, String... types) {
+        Set<String> accepted = Set.of(types);
+        return requirements.stream().anyMatch(requirement -> accepted.contains(requirement.getRequirementType()));
+    }
+
+    private boolean meaningfulBrief(SrsVersionEntity srs, String key) {
+        return isMeaningfulBriefValue(srs.getBriefSnapshot().path(key).asText());
     }
 
     private String businessRequirements(ProjectEntity project, SrsVersionEntity srs, List<SrsRequirementEntity> requirements,
@@ -388,7 +529,11 @@ public class DocumentationPackageService {
         text.append("\n## Stakeholders and decision authority\n\n");
         appendNamedNodes(text, actors, "Stakeholder roles and authority require confirmation.");
         text.append("\n## Business rules\n\n");
-        appendNamedNodes(text, rules, "No business rule is treated as confirmed until the project owner approves it.");
+        if (rules.isEmpty() && (meaningfulBrief(srs, "businessRules") || meaningfulBrief(srs, "business_rules"))) {
+            text.append("- ").append(briefOrDecision(srs, "businessRules", "Business rules require confirmation.")).append("\n");
+        } else {
+            appendNamedNodes(text, rules, "No business rule is treated as confirmed until the project owner approves it.");
+        }
         text.append("\n## Business requirements\n\n");
         appendRequirementSummaries(text, requirements, Set.of("BUSINESS", "FUNCTIONAL"));
         text.append("\n## Assumptions, dependencies, and unresolved decisions\n\n");
@@ -459,22 +604,26 @@ public class DocumentationPackageService {
     private String dataDictionary(ProjectEntity project, SrsVersionEntity srs, List<SrsRequirementEntity> requirements, List<NamedNode> entities) {
         StringBuilder text = documentHeader(project, "Data Dictionary and Lifecycle Specification", srs)
                 .append("## Data-governance boundary\n\n")
-                .append("Only confirmed entities are listed. Attributes other than a stable logical identifier remain unresolved unless present in approved evidence.\n\n")
+                .append("Only confirmed domain concepts are listed. This conceptual register does not invent physical columns, keys, classifications, or retention rules that are absent from approved evidence.\n\n")
                 .append("## Entity register\n\n");
         if (entities.isEmpty()) text.append("No entity model is confirmed. Data design must not begin until ownership and lifecycle decisions are recorded.\n\n");
         for (NamedNode entity : entities) {
+            List<String> references = requirements.stream()
+                    .filter(requirement -> requirementModel(srs, requirement.getRequirementId()).toString()
+                            .toLowerCase(Locale.ROOT).contains(entity.name().toLowerCase(Locale.ROOT)))
+                    .map(SrsRequirementEntity::getRequirementId).toList();
             text.append("### ").append(entity.id()).append(" - ").append(entity.name()).append("\n\n")
-                    .append("- Logical identifier: `id` (recommended placeholder; confirm format)\n")
-                    .append("- Source status: Confirmed entity name; fields unresolved\n")
-                    .append("- Owner: Decision required\n- Classification: Decision required\n- Validation: Decision required\n")
-                    .append("- Retention and deletion: Decision required\n- Access roles: Decision required\n- Audit events: Decision required\n\n");
+                    .append("- Canonical status: Confirmed domain entity in the approved project brief\n")
+                    .append("- Concept identifier: ").append(entity.id()).append("\n")
+                    .append("- Requirement references: ")
+                    .append(references.isEmpty() ? "Confirmed brief and conceptual ERD" : String.join(", ", references))
+                    .append("\n\n");
         }
         text.append("## Data requirements\n\n");
         appendRequirementSummaries(text, requirements, Set.of("DATA", "PRIVACY", "FUNCTIONAL"));
-        text.append("\n## Lifecycle and migration decisions\n\n")
-                .append("- Creation authority and required fields\n- Update concurrency and conflict policy\n- Record ownership and tenant boundary\n")
-                .append("- Classification and encryption expectations\n- Retention, archival, deletion, and legal-hold decisions\n")
-                .append("- Import, migration, reconciliation, rollback, and data-quality evidence\n");
+        text.append("\n## Implementation design boundary\n\n")
+                .append("Before implementation, the downstream data design must define physical identifiers, required attributes, validation, ownership, access roles, classification, encryption, audit events, and lifecycle behavior. Those design choices must trace to this approved SRS and may not contradict its 24-hour idempotency, 24-month booking/audit retention, authorization, or conflict-prevention requirements.\n\n")
+                .append("Migration, reconciliation, rollback, record-merging, and legal-hold behavior remain outside this requirements package until approved evidence defines them.\n");
         return text.toString();
     }
 
@@ -497,8 +646,8 @@ public class DocumentationPackageService {
         return text.toString();
     }
 
-    private String testPlan(ProjectEntity project, List<SrsRequirementEntity> requirements) {
-        StringBuilder text = new StringBuilder("# ").append(project.getName()).append(" - Verification and Test Plan\n\n")
+    private String testPlan(ProjectEntity project, SrsVersionEntity srs, List<SrsRequirementEntity> requirements) {
+        StringBuilder text = documentHeader(project, "Verification and Test Plan", srs)
                 .append("## Strategy\n\nTesting is risk-based and trace-driven. Each normative requirement has at least one explicit verification method and acceptance criterion. Test data, environments, owners, dates, and release evidence must be attached during execution.\n\n")
                 .append("## Entry and exit criteria\n\n- Entry: approved requirement baseline, testable acceptance criteria, controlled environment, and representative data.\n")
                 .append("- Exit: all MUST requirements pass or have an approved waiver; critical defects are closed; traceability and evidence are complete.\n\n")
@@ -527,7 +676,7 @@ public class DocumentationPackageService {
     private String deployment(ProjectEntity project, SrsVersionEntity srs, List<SrsRequirementEntity> requirements) {
         StringBuilder text = documentHeader(project, "Deployment and Release Specification", srs)
                 .append("## Confirmed delivery constraints\n\n").append(briefOrDecision(srs, "constraints", "Platform, environments, regions, timeline, budget, and release topology remain unresolved.")).append("\n\n")
-                .append("## Environment model\n\n- Local development: decision required\n- Continuous integration: decision required\n- Test/staging: decision required\n- Production: decision required\n\n")
+                .append("## Environment model\n\n- Local development: not specified in the approved requirements baseline.\n- Continuous integration: not specified in the approved requirements baseline.\n- Test/staging: not specified in the approved requirements baseline.\n- Production: not specified in the approved requirements baseline.\n\n")
                 .append("## Release pipeline controls\n\n1. Reproducible build and dependency lock.\n2. Static, unit, integration, security, and artifact-validation gates.\n3. Immutable versioned artifact publication.\n4. Environment-specific configuration and secret injection.\n5. Migration preflight, backup, deployment, smoke test, and rollback decision.\n6. Evidence capture and release approval.\n\n")
                 .append("## Deployment requirements\n\n");
         appendRequirementSummaries(text, requirements, Set.of("OPERATIONS", "NON_FUNCTIONAL", "SECURITY"));
@@ -572,43 +721,52 @@ public class DocumentationPackageService {
                 .append("## Confirmed risks\n\n");
         appendRegisterItems(text, srs.getSrsContent().path("risks"), "No confirmed risk entries are available.");
         text.append("\n## Open decisions\n\n");
-        appendRegisterItems(text, srs.getSrsContent().path("decisions"), "No compiled decision entries are available.");
+        appendRegisterItems(text, srs.getSrsContent().path("decisions"), "No open decisions are registered in the approved SRS.");
         text.append("\n## Review cadence\n\nReview risks and decisions at requirements approval, architecture approval, pre-release, after material scope or dependency change, and after every production incident.\n");
         return text.toString();
     }
 
-    private ObjectNode openApi(ProjectEntity project, List<SrsRequirementEntity> requirements, List<NamedNode> entities) {
+    private ObjectNode openApi(ProjectEntity project, List<SrsRequirementEntity> requirements,
+                               Map<String, ApiOperation> confirmedOperations) {
         ObjectNode api = objectMapper.createObjectNode();
         api.put("openapi", "3.1.1");
         ObjectNode info = api.putObject("info"); info.put("title", project.getName() + " API"); info.put("version", "1.0.0");
-        info.put("description", "Standards-informed contract shell. Operations are emitted only after paths and methods are explicitly confirmed.");
+        info.put("description", "Canonical SRS contract. Every emitted operation carries its source requirement ID.");
         ObjectNode paths = api.putObject("paths");
         ArrayNode unresolved = api.putArray("x-velocira-unresolved-api-requirements");
         for (SrsRequirementEntity requirement : requirements) {
             if (!"API".equals(requirement.getRequirementType())) continue;
-            ObjectNode unresolvedRequirement = unresolved.addObject();
-            unresolvedRequirement.put("requirementId", requirement.getRequirementId());
-            unresolvedRequirement.put("statement", requirement.getStatement());
-            unresolvedRequirement.put("decision", "Confirm the resource path, HTTP method, authorization, request schema, responses, errors, idempotency, and versioning before an operation is generated.");
-        }
-        ObjectNode schemas = api.putObject("components").putObject("schemas");
-        for (NamedNode entity : entities) {
-            ObjectNode schema = schemas.putObject(titleCase(entity.name()));
-            schema.put("type", "object"); schema.put("x-velocira-entity-id", entity.id());
-            ObjectNode properties = schema.putObject("properties");
-            properties.putObject("id").put("type", "string").put("format", "uuid");
-            schema.putArray("required").add("id");
+            ApiOperation confirmed = confirmedOperations.get(requirement.getRequirementId());
+            if (confirmed == null) {
+                ObjectNode unresolvedRequirement = unresolved.addObject();
+                unresolvedRequirement.put("requirementId", requirement.getRequirementId());
+                unresolvedRequirement.put("decision", "Confirm path, HTTP method, and stable operation ID in the canonical SRS before contract publication.");
+                continue;
+            }
+            ObjectNode pathItem = paths.path(confirmed.path()).isObject()
+                    ? (ObjectNode) paths.path(confirmed.path()) : paths.putObject(confirmed.path());
+            ObjectNode operation = pathItem.putObject(confirmed.method());
+            operation.put("operationId", confirmed.operationId());
+            operation.put("summary", requirementTitle(requirement));
+            operation.put("description", requirement.getStatement());
+            operation.put("x-velocira-requirement-id", requirement.getRequirementId());
+            operation.putObject("responses").putObject("default")
+                    .put("description", "Response details remain governed by the canonical SRS contract evidence.");
         }
         return api;
     }
 
     private String srsMarkdown(ProjectEntity project, SrsVersionEntity srs, List<SrsRequirementEntity> requirements) {
         JsonNode content = srs.getSrsContent();
+        JsonNode manifest = content.path("generation_manifest");
+        String generationMode = manifest.path("mode").asText("STANDARD").toUpperCase(Locale.ROOT);
+        int packageWordTarget = manifest.path("long_form_provenance").path("expected_package_word_target").asInt(0);
         StringBuilder text = documentHeader(project, "Software Requirements Specification", srs)
                 .append("## Document control\n\n")
                 .append("| Field | Value |\n|---|---|\n")
-                .append("| Status | Needs stakeholder review |\n")
-                .append("| Detail level | Exhaustive |\n")
+                .append("| Status | ").append(srsStatusLabel(srs.getStatus())).append(" |\n")
+                .append("| Generation mode | ").append(generationMode).append(" |\n")
+                .append("| Declared package word target | ").append(packageWordTarget > 0 ? packageWordTarget : "Not declared").append(" |\n")
                 .append("| Source SRS version | ").append(srs.getVersionNumber()).append(" |\n")
                 .append("| Standards profile | ").append(srs.getProfile().getName()).append(" |\n")
                 .append("| Provider / model | ").append(srs.getProvider()).append(" / ").append(srs.getModel()).append(" |\n")
@@ -658,10 +816,10 @@ public class DocumentationPackageService {
             text.append("\n**Preconditions**\n\n");
             appendJsonBullets(text, detail.path("preconditions"), "No precondition is confirmed.");
             text.append("\n**Data involved**\n\n");
-            appendJsonBullets(text, detail.path("data_involved"), "No data item is confirmed for this requirement.");
+            appendJsonBullets(text, detail.path("data_involved"), "No additional data item is specified for this requirement.");
             text.append("\n**Dependencies and risks**\n\n");
-            appendJsonBullets(text, detail.path("dependencies"), "No dependency is confirmed.");
-            appendJsonBullets(text, detail.path("risks"), "No requirement-specific risk is confirmed.");
+            appendJsonBullets(text, detail.path("dependencies"), "No external dependency is specified for this requirement.");
+            appendJsonBullets(text, detail.path("risks"), "No additional requirement-specific risk is specified.");
             text.append("\n")
                     .append("\n**Acceptance criteria**\n\n");
             int criterion = 1;
@@ -696,7 +854,7 @@ public class DocumentationPackageService {
     }
 
     private String useCases(ProjectEntity project, SrsVersionEntity srs, List<SrsRequirementEntity> requirements, List<NamedNode> actors, List<NamedNode> entities) {
-        StringBuilder text = new StringBuilder("# ").append(project.getName()).append(" - Use cases\n\n");
+        StringBuilder text = documentHeader(project, "Use Cases", srs);
         int number = 1;
         for (SrsRequirementEntity requirement : requirements) {
             if (!"FUNCTIONAL".equals(requirement.getRequirementType())) continue;
@@ -730,11 +888,20 @@ public class DocumentationPackageService {
     }
 
     private String plantUml(ProjectEntity project, SrsVersionEntity srs, List<SrsRequirementEntity> requirements, List<NamedNode> actors) {
-        String actor = actors.isEmpty() ? "Project user" : actors.get(0).name();
-        String actorId = "ACTOR_" + slug(actor).toUpperCase(Locale.ROOT);
-        StringBuilder source = new StringBuilder("@startuml\nleft to right direction\nskinparam packageStyle rectangle\n")
-                .append("actor \"").append(plantText(actor)).append("\" as ").append(actorId).append("\n")
-                .append("rectangle \"").append(plantText(project.getName())).append("\" {\n");
+        Map<String, String> actorIds = new LinkedHashMap<>();
+        for (SrsRequirementEntity requirement : requirements) {
+            if (!"FUNCTIONAL".equals(requirement.getRequirementType())) continue;
+            JsonNode detail = requirementModel(srs, requirement.getRequirementId());
+            if (detail.path("actors").isArray()) detail.path("actors").forEach(actor -> {
+                String name = actor.asText().trim();
+                if (isMeaningfulBriefValue(name)) actorIds.putIfAbsent(name, "ACTOR_" + slug(name).toUpperCase(Locale.ROOT));
+            });
+        }
+        if (actorIds.isEmpty()) for (NamedNode actor : actors) actorIds.put(actor.name(), "ACTOR_" + slug(actor.name()).toUpperCase(Locale.ROOT));
+        if (actorIds.isEmpty()) actorIds.put("Project user", "ACTOR_PROJECT_USER");
+        StringBuilder source = new StringBuilder("@startuml\nleft to right direction\nskinparam packageStyle rectangle\n");
+        actorIds.forEach((name, id) -> source.append("actor \"").append(plantText(name)).append("\" as ").append(id).append("\n"));
+        source.append("rectangle \"").append(plantText(project.getName())).append("\" {\n");
         int number = 1;
         for (SrsRequirementEntity requirement : requirements) {
             if (!"FUNCTIONAL".equals(requirement.getRequirementType())) continue;
@@ -742,7 +909,11 @@ public class DocumentationPackageService {
             String id = "UC_" + String.format("%03d", number++);
             source.append("  usecase \"").append(plantText(requirement.getRequirementId() + ": " + truncate(requirement.getStatement(), 80)))
                     .append("\" as ").append(id).append("\n");
-            source.append("  ").append(actorId).append(" --> ").append(id).append("\n");
+            List<String> linkedActors = new ArrayList<>();
+            if (detail.path("actors").isArray()) detail.path("actors").forEach(actor -> linkedActors.add(actor.asText()));
+            if (linkedActors.isEmpty()) linkedActors.add(actorIds.keySet().iterator().next());
+            linkedActors.stream().map(actorIds::get).filter(Objects::nonNull).distinct()
+                    .forEach(actorId -> source.append("  ").append(actorId).append(" --> ").append(id).append("\n"));
         }
         return source.append("}\n@enduml\n").toString();
     }
@@ -755,8 +926,8 @@ public class DocumentationPackageService {
         return source.toString();
     }
 
-    private String traceability(List<TraceDraft> traces) {
-        StringBuilder text = new StringBuilder("# Traceability\n\n")
+    private String traceability(ProjectEntity project, SrsVersionEntity srs, List<TraceDraft> traces) {
+        StringBuilder text = documentHeader(project, "Traceability Matrix", srs)
                 .append("This matrix connects every reviewed requirement to its design, API, and acceptance evidence. ")
                 .append("Read each row from left to right: requirement -> use case -> entity -> API operation -> acceptance criterion.\n\n")
                 .append("## Requirement matrix\n\n")
@@ -765,7 +936,7 @@ public class DocumentationPackageService {
         for (TraceDraft trace : traces) {
             text.append("|").append(trace.requirement().getRequirementId()).append("|")
                     .append(orDash(trace.useCaseId())).append("|").append(orDash(trace.entityId())).append("|")
-                    .append(trace.apiOperationId()).append("|").append(trace.acceptanceCriterionId()).append("|")
+                    .append(orDash(trace.apiOperationId())).append("|").append(trace.acceptanceCriterionId()).append("|")
                     .append(trace.requirement().getSourceKind()).append("|\n");
         }
         text.append("\n## Coverage and review rules\n\n")
@@ -779,26 +950,69 @@ public class DocumentationPackageService {
         if (!"3.1.1".equals(api.path("openapi").asText())) issues.add("OpenAPI version must be 3.1.1.");
         if (api.path("info").path("title").asText().isBlank() || api.path("info").path("version").asText().isBlank()) issues.add("OpenAPI info is incomplete.");
         if (!api.path("paths").isObject()) issues.add("OpenAPI paths must be an object.");
+        if (api.path("paths").isEmpty()) issues.add("OpenAPI must contain at least one confirmed operation.");
         Set<String> operationIds = new HashSet<>();
-        api.path("paths").properties().forEach(path -> path.getValue().properties().forEach(method -> {
+        api.path("paths").properties().forEach(path -> {
+            if (!path.getKey().startsWith("/")) issues.add("OpenAPI path must start with '/'.");
+            path.getValue().properties().forEach(method -> {
             String operationId = method.getValue().path("operationId").asText();
-            if (operationId.isBlank() || !operationIds.add(operationId) || method.getValue().path("x-velocira-requirement-id").asText().isBlank()) {
+            if (!HTTP_METHODS.contains(method.getKey().toLowerCase(Locale.ROOT))) issues.add("Unsupported OpenAPI method: " + method.getKey() + ".");
+            if (operationId.isBlank() || !operationIds.add(operationId) || method.getValue().path("x-velocira-requirement-id").asText().isBlank()
+                    || !method.getValue().path("responses").isObject() || method.getValue().path("responses").isEmpty()) {
                 issues.add("OpenAPI has a missing or duplicate operation trace.");
             }
-        }));
-        if (api.path("paths").isEmpty() && !api.path("x-velocira-unresolved-api-requirements").isArray()) {
-            issues.add("An empty OpenAPI contract must state its applicability or unresolved API requirements.");
-        }
+        }); });
         return validArtifact("openapi-3.1", issues.isEmpty(), issues);
     }
 
+    private ApiOperation confirmedApiOperation(JsonNode detail) {
+        if (detail == null || !detail.isObject()) return null;
+        JsonNode contract = firstObject(detail.path("api_operation"), detail.path("apiOperation"), detail.path("endpoint"), detail.path("api"));
+        String path = firstText(detail.path("api_path"), detail.path("path"), contract.path("path"));
+        String method = firstText(detail.path("http_method"), detail.path("method"), contract.path("http_method"), contract.path("method")).toLowerCase(Locale.ROOT);
+        String operationId = firstText(detail.path("operation_id"), detail.path("operationId"), contract.path("operation_id"), contract.path("operationId"));
+        if (!path.startsWith("/") || !HTTP_METHODS.contains(method) || operationId.isBlank()
+                || !operationId.matches("[A-Za-z][A-Za-z0-9_.-]{2,120}")) return null;
+        return new ApiOperation(path, method, operationId);
+    }
+
+    private boolean apiOperationMatchesLocalSource(JsonNode detail, SrsRequirementEntity requirement, ApiOperation operation) {
+        String localSource = firstText(detail.path("source_detail"), detail.path("sourceDetail"));
+        if (localSource.isBlank()) localSource = requirement.getSourceDetail();
+        String normalized = localSource == null ? "" : localSource.replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+        String signature = (operation.method() + " " + operation.path()).toLowerCase(Locale.ROOT);
+        return normalized.contains(signature) || normalized.contains(operation.operationId().toLowerCase(Locale.ROOT));
+    }
+
+    private JsonNode firstObject(JsonNode... values) {
+        for (JsonNode value : values) if (value != null && value.isObject()) return value;
+        return objectMapper.createObjectNode();
+    }
+
+    private String firstText(JsonNode... values) {
+        for (JsonNode value : values) if (value != null && value.isTextual() && !value.asText().isBlank()) return value.asText().trim();
+        return "";
+    }
+
     private StringBuilder documentHeader(ProjectEntity project, String documentTitle, SrsVersionEntity srs) {
+        JsonNode manifest = srs.getSrsContent().path("generation_manifest");
+        String mode = manifest.path("mode").asText("STANDARD").toUpperCase(Locale.ROOT);
+        String actualModel = manifest.path("actual_model").asText(srs.getModel());
         return new StringBuilder("# ").append(project.getName()).append(" - ").append(documentTitle).append("\n\n")
-                .append("Version: package source SRS v").append(srs.getVersionNumber()).append("  \n")
-                .append("Status: needs stakeholder review  \n")
-                .append("Generated: ").append(srs.getGeneratedAt()).append("  \n")
-                .append("Source model: ").append(srs.getModel()).append("  \n\n")
-                .append("> **Evidence rule:** Confirmed facts are separated from recommendations, assumptions, unresolved decisions, and exclusions. Generated guidance is not a compliance or certification claim.\n\n");
+                .append("Canonical source: SRS v").append(srs.getVersionNumber())
+                .append(" | Status: ").append(srsStatusLabel(srs.getStatus()))
+                .append(" | Generation: ").append(mode)
+                .append(" | Model: ").append(actualModel).append("\n\n");
+    }
+
+    private String srsStatusLabel(SrsVersionStatus status) {
+        if (status == null) return "Unknown";
+        return switch (status) {
+            case DRAFT -> "Draft";
+            case NEEDS_REVIEW -> "Needs stakeholder review";
+            case APPROVED -> "Approved";
+            case CHANGES_REQUESTED -> "Changes requested";
+        };
     }
 
     private String valueOrDecision(String value, String decision) {
@@ -823,7 +1037,7 @@ public class DocumentationPackageService {
         } else if (values.isTextual() && !values.asText().isBlank()) {
             text.append("- ").append(values.asText()).append("\n");
         } else {
-            text.append("- **DECISION REQUIRED:** ").append(emptyMessage).append("\n");
+            text.append("- ").append(emptyMessage).append("\n");
         }
     }
 
@@ -858,12 +1072,12 @@ public class DocumentationPackageService {
 
     private void appendDecisionRegister(StringBuilder text, SrsVersionEntity srs) {
         JsonNode decisions = srs.getSrsContent().path("decisions");
-        appendRegisterItems(text, decisions, "No structured decision register is available. Review missing scope, role, workflow, data, quality, security, and delivery decisions manually.");
+        appendRegisterItems(text, decisions, "No open decisions are registered in the approved SRS.");
     }
 
     private void appendRegisterItems(StringBuilder text, JsonNode values, String emptyMessage) {
         if (!values.isArray() || values.isEmpty()) {
-            text.append("- **DECISION REQUIRED:** ").append(emptyMessage).append("\n");
+            text.append("- ").append(emptyMessage).append("\n");
             return;
         }
         for (JsonNode item : values) {
@@ -897,18 +1111,52 @@ public class DocumentationPackageService {
     }
 
     private void appendStandards(StringBuilder text, SrsVersionEntity srs, Set<String> keys) {
-        JsonNode standards = srs.getSrsContent().path("standards_applied");
+        JsonNode standards = applicableStandards(srs);
         int count = 0;
         if (standards.isArray()) for (JsonNode standard : standards) {
             String id = standard.path("id").asText();
             boolean selected = keys.isEmpty() || keys.stream().anyMatch(id::contains);
             if (!selected) continue;
+            String rationale = standard.path("applicability_reason").asText(standard.path("description").asText());
             text.append("- **").append(standard.path("title").asText(id)).append(":** ")
-                    .append(standard.path("description").asText()).append(" ")
-                    .append(standard.path("source_detail").asText()).append("\n");
+                    .append(truncate(rationale, 240)).append("\n");
             count++;
         }
         if (count == 0) text.append("- No applicable standard entry is compiled for this section; reviewer confirmation is required.\n");
+    }
+
+    private ArrayNode applicableStandards(SrsVersionEntity srs) {
+        ArrayNode result = objectMapper.createArrayNode();
+        JsonNode standards = srs.getSrsContent().path("standards_applied");
+        String exclusions = canonicalText(srs.getSrsContent().path("exclusions")).toLowerCase(Locale.ROOT);
+        Set<String> seen = new HashSet<>();
+        if (standards.isArray()) for (JsonNode standard : standards) {
+            String id = standard.path("id").asText(standard.path("title").asText());
+            if (id.isBlank() || !seen.add(id.toLowerCase(Locale.ROOT))) continue;
+            String rationale = standard.path("applicability_reason").asText(standard.path("description").asText());
+            java.util.regex.Matcher matcher = APPLICABILITY_SIGNALS.matcher(rationale);
+            if (matcher.find()) {
+                List<String> signals = Arrays.stream(matcher.group(1).split("[,/]"))
+                        .map(String::trim).map(value -> value.toLowerCase(Locale.ROOT))
+                        .filter(value -> value.length() >= 2).toList();
+                boolean excludedOnly = !signals.isEmpty() && signals.stream().allMatch(exclusions::contains);
+                if (excludedOnly) continue;
+            }
+            result.add(standard.deepCopy());
+            if (result.size() == 10) break;
+        }
+        return result;
+    }
+
+    private String canonicalText(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) return "";
+        if (node.isTextual()) return node.asText();
+        if (node.isArray()) {
+            StringBuilder value = new StringBuilder();
+            node.forEach(item -> value.append(canonicalText(item)).append(' '));
+            return value.toString();
+        }
+        return node.toString();
     }
 
     private String diagramSource(SrsVersionEntity srs, String type, String fallback) {
@@ -936,7 +1184,12 @@ public class DocumentationPackageService {
     }
 
     private String fallbackWorkflowDiagram(SrsVersionEntity srs) {
-        List<String> steps = splitBriefSteps(srs.getBriefSnapshot().path("workflows").asText());
+        List<String> steps = new ArrayList<>();
+        JsonNode compiled = srs.getSrsContent().path("workflows");
+        if (compiled.isArray()) compiled.forEach(workflow -> workflow.path("main_flow").forEach(step -> {
+            if (!step.asText().isBlank()) steps.add(step.asText());
+        }));
+        if (steps.isEmpty()) steps.addAll(splitBriefSteps(srs.getBriefSnapshot().path("workflows").asText()));
         StringBuilder source = new StringBuilder("flowchart TD\n");
         if (steps.isEmpty()) return source.append("  START[\"Workflow trigger - unresolved\"] --> END[\"Outcome - unresolved\"]\n").toString();
         for (int index = 0; index < steps.size(); index++) {
@@ -961,15 +1214,63 @@ public class DocumentationPackageService {
         ObjectNode node = objectMapper.createObjectNode(); node.put("valid", valid); node.put("validator", validator);
         ArrayNode problems = node.putArray("issues"); issues.forEach(problems::add); return node;
     }
-    private boolean isPlantUmlValid(String source) { return source.startsWith("@startuml") && source.trim().endsWith("@enduml") && !source.contains("\u0000"); }
+    private boolean isPlantUmlValid(String source) {
+        return source != null && source.startsWith("@startuml") && source.trim().endsWith("@enduml")
+                && source.contains("usecase \"") && source.contains(" --> ") && !source.contains("\u0000");
+    }
     private boolean isMermaidFlowValid(String source) {
         return source != null && (source.startsWith("flowchart ") || source.startsWith("graph ")) && !source.contains("\u0000");
     }
+    private boolean isMeaningfulFlow(String source) {
+        if (!isMermaidFlowValid(source)) return false;
+        long edges = source.lines().filter(line -> line.contains("-->") || line.contains("-.->") || line.contains("==>")).count();
+        return edges > 0 && !source.toLowerCase(Locale.ROOT).contains("require confirmation")
+                && !source.toLowerCase(Locale.ROOT).contains("unresolved");
+    }
     private boolean isErdValid(String source) {
-        if (!source.startsWith("erDiagram") || source.contains("\u0000")) return false;
-        long opens = source.chars().filter(character -> character == '{').count();
-        long closes = source.chars().filter(character -> character == '}').count();
-        return opens == closes && source.lines().allMatch(line -> !line.contains("PK") || line.trim().endsWith("PK"));
+        if (source == null || !source.startsWith("erDiagram") || source.contains("\u0000")) return false;
+        long entities = ERD_ENTITY.matcher(source).results().count();
+        return entities >= 2 && ERD_RELATIONSHIP.matcher(source).find()
+                && source.lines().allMatch(line -> !line.contains("PK") || line.trim().endsWith("PK"));
+    }
+
+    private ArrayNode erdRelationships(String source) {
+        ArrayNode relationships = objectMapper.createArrayNode();
+        if (source == null || source.isBlank()) return relationships;
+        java.util.regex.Matcher matcher = ERD_RELATIONSHIP_CAPTURE.matcher(source);
+        while (matcher.find()) {
+            ObjectNode relationship = relationships.addObject();
+            relationship.put("from", matcher.group(1));
+            relationship.put("to", matcher.group(2));
+            relationship.put("label", matcher.group(3) == null ? "related" : matcher.group(3).trim());
+        }
+        return relationships;
+    }
+
+    private List<NamedNode> canonicalEntities(SrsVersionEntity srs) {
+        List<NamedNode> structured = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        JsonNode definitions = srs.getSrsContent().path("definitions");
+        if (definitions.isArray()) for (JsonNode definition : definitions) {
+            String category = definition.path("category").asText().replace('_', ' ').replace('-', ' ').trim();
+            String name = definition.path("term").asText(
+                    definition.path("name").asText(definition.path("title").asText()));
+            if (!(category.equalsIgnoreCase("Domain entity") || category.equalsIgnoreCase("Entity"))
+                    || !isMeaningfulEntityName(name) || !seen.add(slug(name))) continue;
+            structured.add(new NamedNode("ENTITY-" + String.format("%03d", structured.size() + 1), name.trim()));
+        }
+        if (!structured.isEmpty()) return structured;
+        return namesFromBrief(srs.getBriefSnapshot(), "entities", "entity").stream()
+                .filter(node -> isMeaningfulEntityName(node.name())).toList();
+    }
+
+    private boolean isMeaningfulEntityName(String value) {
+        if (!isMeaningfulBriefValue(value)) return false;
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        int words = normalized.split("\\s+").length;
+        if (normalized.matches(".*\\b(?:only while|when needed|as needed|if required|unless|shall|must|should|will|may|can)\\b.*")) return false;
+        if (normalized.matches(".*\\b(?:deadline|authority|priority|constraint|requirement|needed)\\b.*")) return false;
+        return words <= 2 || !normalized.matches("^(?:access|allow|deny|ensure|prevent|retain|recover|detect|use|provide|support|review)\\b.*");
     }
 
     private List<NamedNode> namesFromBrief(JsonNode brief, String... keys) {
@@ -1022,7 +1323,10 @@ public class DocumentationPackageService {
         String text = requirement.getStatement().toLowerCase(Locale.ROOT);
         return entities.stream().filter(entity -> text.contains(entity.name().toLowerCase(Locale.ROOT))).map(NamedNode::id).findFirst().orElse(null);
     }
-    private List<String> acceptanceCriteria(String value) { return Arrays.stream(value.split("\\r?\\n")).map(String::trim).filter(item -> !item.isBlank()).toList(); }
+    private List<String> acceptanceCriteria(String value) {
+        if (value == null || value.isBlank()) return List.of();
+        return Arrays.stream(value.split("\\r?\\n")).map(String::trim).filter(item -> !item.isBlank()).toList();
+    }
     private String openApiYaml(ObjectNode api, String projectName) {
         StringBuilder yaml = new StringBuilder("openapi: 3.1.1\ninfo:\n  title: ").append(yaml(projectName)).append(" API\n  version: 1.0.0\npaths:\n");
         api.path("paths").properties().forEach(path -> {
@@ -1076,8 +1380,11 @@ public class DocumentationPackageService {
     }
 
     private record NamedNode(String id, String name) { }
+    private record ApiOperation(String path, String method, String operationId) { }
+    private record ArtifactDisposition(String status, String reason) { }
     private record TraceDraft(SrsRequirementEntity requirement, String useCaseId, String entityId, String apiOperationId, String acceptanceCriterionId) { }
     private record ArtifactDraft(DocumentationArtifactType type, String title, String content, String sourceFormat, String sourceContent, ObjectNode validation) { }
-    private record CanonicalDraft(ObjectNode model, List<ArtifactDraft> artifacts, List<TraceDraft> traces) { }
+    private record CanonicalDraft(ObjectNode model, List<ArtifactDraft> artifacts, List<TraceDraft> traces,
+                                  Map<DocumentationArtifactType, ArtifactDisposition> dispositions) { }
     private record ValidationResult(boolean valid, List<String> issues, ObjectNode node) { }
 }

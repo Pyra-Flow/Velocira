@@ -41,3 +41,116 @@
 :global(.dark) .apiEndpoint footer { border-top-color: rgba(151,177,193,.18); }
 @media (max-width: 1120px) { .header { grid-template-columns: 1fr auto; }.modeSwitch { grid-column: 1 / -1; justify-content: flex-end; border-top: 1px solid var(--documents-border); border-left: 0; }.atlasLayout { grid-template-columns: minmax(190px,.72fr) minmax(360px,1.3fr); }.inspector { grid-column: 1 / -1; border-top: 1px solid var(--documents-border); }.inspector .metadata { grid-template-columns: repeat(3, minmax(0,1fr)); }.linkedRequirements, .actions { display: none; }.handoffLayout { grid-template-columns: minmax(190px,.75fr) minmax(380px,1.4fr); }.linkedArtifacts { grid-column: 1 / -1; border-top: 1px solid var(--documents-border); display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }.linkedArtifacts section + section { margin-top: 0; } }
 @media (max-width: 760px) { .header { grid-template-columns: 1fr; }.headerMeta, .modeSwitch { border-top: 1px solid var(--documents-border); border-left: 0; }.headerMeta { justify-content: space-between; }.modeSwitch { justify-content: flex-start; }.atlasLayout, .handoffLayout { grid-template-columns: 1fr; }.documentMap, .viewer, .handoffLibrary, .traceContent { border-right: 0; border-bottom: 1px solid var(--documents-border); }.documentMap { max-height: 360px; overflow: auto; }.viewer { min-height: 620px; }.inspector .metadata { grid-template-columns: 1fr 1fr; }.linkedArtifacts { grid-template-columns: 1fr; }.bundle, .empty { grid-template-columns: 1fr; align-items: start; }.bundle { align-items: flex-start; flex-direction: column; }.bundle button { width: 100%; justify-content: center; }.empty > svg { display: none; }.empty button { justify-content: center; } }
+
+/* Redline theme mapping: documentation surfaces now inherit the application palette. */
+.commandCenter,
+.empty,
+.loading {
+  --documents-bg: var(--background);
+  --documents-panel: var(--card);
+  --documents-panel-raised: var(--background-secondary);
+  --documents-border: var(--border);
+  --documents-border-strong: var(--primary);
+  --documents-accent: var(--primary);
+  --documents-accent-muted: var(--primary-light);
+  --documents-text-primary: var(--foreground);
+  --documents-text-secondary: var(--foreground-secondary);
+  --documents-text-muted: var(--foreground-tertiary);
+  border-radius: var(--sf-radius-sm);
+  box-shadow: none;
+}
+
+.documentMap,
+.handoffLibrary,
+.bundle,
+.traceTable th,
+.viewerCanvas,
+.diagramPreview {
+  background: var(--background-secondary);
+}
+
+.viewer,
+.traceContent,
+.documentBody,
+.requirementCallout,
+.implementationNote,
+.apiStats > div,
+.apiEndpoint > div span {
+  background: var(--card);
+}
+
+.mapRow:hover {
+  background: var(--card-hover);
+}
+
+.documentParagraph,
+.documentBullet {
+  color: var(--foreground-secondary);
+}
+
+.documentIdentity {
+  border-bottom-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+}
+
+.alertError,
+.needsReview,
+.requirementCallout strong {
+  color: var(--error);
+}
+
+.alertError {
+  background: color-mix(in srgb, var(--error) 8%, transparent);
+}
+
+.apiEndpoint footer {
+  border-top-color: var(--border-subtle);
+}
+
+:global(.dark) .commandCenter,
+:global(.dark) .empty,
+:global(.dark) .loading {
+  --documents-bg: var(--background);
+  --documents-panel: var(--card);
+  --documents-panel-raised: var(--background-secondary);
+  --documents-border: var(--border);
+  --documents-border-strong: var(--primary);
+  --documents-accent: var(--primary);
+  --documents-accent-muted: var(--primary-light);
+  --documents-text-primary: var(--foreground);
+  --documents-text-secondary: var(--foreground-secondary);
+  --documents-text-muted: var(--foreground-tertiary);
+}
+
+:global(.dark) .documentMap,
+:global(.dark) .handoffLibrary,
+:global(.dark) .bundle,
+:global(.dark) .traceTable th,
+:global(.dark) .viewerCanvas,
+:global(.dark) .diagramPreview {
+  background: var(--background-secondary);
+}
+
+:global(.dark) .viewer,
+:global(.dark) .traceContent,
+:global(.dark) .documentBody,
+:global(.dark) .requirementCallout,
+:global(.dark) .implementationNote,
+:global(.dark) .apiStats > div,
+:global(.dark) .apiEndpoint > div span {
+  background: var(--card);
+}
+
+:global(.dark) .documentParagraph,
+:global(.dark) .documentBullet {
+  color: var(--foreground-secondary);
+}
+
+:global(.dark) .documentIdentity {
+  border-bottom-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+}
+
+:global(.dark) .alertError,
+:global(.dark) .needsReview,
+:global(.dark) .requirementCallout strong {
+  color: var(--error);
+}
