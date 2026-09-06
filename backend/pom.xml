@@ -23,7 +23,7 @@
         <jjwt.version>0.13.0</jjwt.version>
         <springdoc.version>3.1.0</springdoc.version>
         <bucket4j.version>8.19.0</bucket4j.version>
-        <google.api-client.version>2.9.0</google.api-client.version>
+        <google.api-client.version>2.9.1</google.api-client.version>
         <byte-buddy.version>1.15.11</byte-buddy.version>
         <poi.version>5.5.1</poi.version>
         <pdfbox.version>3.0.8</pdfbox.version>
